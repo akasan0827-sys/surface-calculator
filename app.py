@@ -67,9 +67,9 @@ if 'parts' not in st.session_state:
     
 with st.form("input", clear_on_submit=True):
     c1, c2, c3 = st.columns(3)
-    w = c1.number_input("Width (mm)", value=1850, min_value=1)
-    h = c2.number_input("Height (mm)", value=670, min_value=1)
-    q = c3.number_input("Quantity", value=10, min_value=1)
+    w = c1.number_input("Width (mm)", value=1000, min_value=1)
+    h = c2.number_input("Height (mm)", value=350, min_value=1)
+    q = c3.number_input("Quantity", value=6, min_value=1)
     
     if st.form_submit_button("Add Size to Cut List"): 
         st.session_state.parts.append({"w": w, "h": h, "q": q})
@@ -79,17 +79,15 @@ if st.session_state.parts:
     total_order_sqm = 0
     
     for idx, p in enumerate(st.session_state.parts):
-        # Calculate SQM (1 SQM = 1,000,000 SQ MM)
         sqm_per_pc = (p['w'] * p['h']) / 1_000_000
         row_total_sqm = sqm_per_pc * p['q']
         total_order_sqm += row_total_sqm
-        
         st.write(f"• **{p['q']} pcs** of {p['w']}x{p['h']}mm &nbsp;&nbsp;*( {sqm_per_pc:.2f} SQM/pc | Total: {row_total_sqm:.2f} SQM )*")
         
     st.info(f"📐 **Total Project Area:** {total_order_sqm:.2f} SQM")
         
     col_run, col_clear = st.columns([1, 5])
-    run_calc = col_run.button("Run Optimizer", type="primary")
+    run_calc = col_run.button("Run Strict Mathematical Optimizer", type="primary")
     if col_clear.button("Clear Entire List"):
         st.session_state.parts = []
         st.rerun()
@@ -112,8 +110,13 @@ if st.session_state.parts:
         assembled_pieces_data = [] 
         total_glue_length_cm = 0.0
         
-        with st.spinner('Running multi-strategy factory optimization...'):
-            for test_slabs in range(1, total_target_qty + 1):
+        # Determine the absolute theoretical minimum slabs needed to prevent starting at 1
+        slab_area = sheet_w * sheet_h
+        theoretical_min_slabs = max(1, math.ceil(true_delivered_area / slab_area))
+        max_test_slabs = theoretical_min_slabs + 50 # Add a massive buffer for terrible nesting scenarios
+        
+        with st.spinner('Running strict mathematical factory optimization...'):
+            for test_slabs in range(theoretical_min_slabs, max_test_slabs):
                 
                 packer_solid = newPacker(rotation=True)
                 packer_solid.add_bin(sheet_w, sheet_h, count=test_slabs)
@@ -134,6 +137,7 @@ if st.session_state.parts:
                     
                 if is_seamless:
                     missing_targets = [t for t in all_targets if t['id'] not in packed_ids]
+                    # Process largest pieces first
                     missing_targets = sorted(missing_targets, key=lambda x: x['w'] * x['h'], reverse=True)
                     
                     current_packed_recycled_frags = []
@@ -144,6 +148,15 @@ if st.session_state.parts:
                         
                         for strategy in SPLIT_STRATEGIES:
                             frags = generate_fragments(target['w'], target['h'], strategy)
+                            
+                            # Filter out impossible strategies (fragments larger than the slab)
+                            invalid_strategy = False
+                            for f in frags:
+                                if f['w'] > sheet_w or f['h'] > sheet_h:
+                                    invalid_strategy = True
+                                    break
+                            if invalid_strategy:
+                                continue
                             
                             test_packer = newPacker(rotation=True)
                             test_packer.add_bin(sheet_w, sheet_h, count=test_slabs)
@@ -159,11 +172,14 @@ if st.session_state.parts:
                                 test_packer.add_rect(f['w'] + kerf, f['h'] + kerf, rid=f"rec_{target['id']}_{target['w']}_{target['h']}_{f_idx}")
                                 
                             test_packer.pack()
-                            
                             packed_rects_test = test_packer.rect_list()
-                            found_frags = sum(1 for r in packed_rects_test if str(r[5]).startswith(f"rec_{target['id']}_"))
                             
-                            if found_frags == len(frags):
+                            # STRICT MATHEMATICAL VALIDATION
+                            # Ensure NO pieces were evicted by the packer to make room for new ones
+                            expected_total_pieces = len(packed_ids) + len(current_packed_recycled_frags) + len(frags)
+                            
+                            if len(packed_rects_test) == expected_total_pieces:
+                                # Safe! Every single piece fit without overlap or eviction.
                                 for f_idx, f in enumerate(frags):
                                     current_packed_recycled_frags.append({
                                         'w': f['w'], 'h': f['h'], 
@@ -174,6 +190,7 @@ if st.session_state.parts:
                                 break 
                                 
                         if not target_packed:
+                            # This specific missing target could not fit with ANY split strategy on this slab count
                             all_recycled_packed = False
                             break 
                             
@@ -182,6 +199,7 @@ if st.session_state.parts:
                         final_solid_count = len(packed_ids)
                         final_recycled_count = len(missing_targets)
                         
+                        # Generate final precise coordinates
                         final_packer = newPacker(rotation=True)
                         final_packer.add_bin(sheet_w, sheet_h, count=final_slabs)
                         for tid in packed_ids:
@@ -193,16 +211,13 @@ if st.session_state.parts:
                         final_packer.pack()
                         final_rects = final_packer.rect_list()
                         
-                        # Build assembly map data and calculate exact glue length
+                        # Calculate Glue Requirements
                         total_glue_length_mm = 0
                         for t in missing_targets:
                             t_frags = [f['layout'] for f in current_packed_recycled_frags if str(f['rid']).startswith(f"rec_{t['id']}_")]
-                            
-                            # Calculate glue line: it cuts across the short side
                             seam_length = t['h'] if t['w'] >= t['h'] else t['w']
                             joints_count = len(t_frags) - 1
-                            piece_glue_mm = joints_count * seam_length
-                            total_glue_length_mm += piece_glue_mm
+                            total_glue_length_mm += (joints_count * seam_length)
                             
                             assembled_pieces_data.append({
                                 'id': t['id'], 'w': t['w'], 'h': t['h'], 'frags': t_frags
@@ -289,8 +304,4 @@ if st.session_state.parts:
                     ax2.set_title(f"Assembled Product: {asm['w']}x{asm['h']}mm ({joint_text})", fontsize=10)
                     
                     st.pyplot(fig2)
-                    pdf.savefig(fig2, bbox_inches='tight')
-                    plt.close(fig2)
-
-        st.markdown("---")
-        st.download_button("📄 Export Production PDF", pdf_buffer.getvalue(), "mixed_batch_production.pdf", "application/pdf")
+                    pdf.savefig(fig2,
