@@ -1,4 +1,5 @@
 import streamlit as st
+import rectpack
 from rectpack import newPacker
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -7,23 +8,23 @@ import math
 from matplotlib.backends.backend_pdf import PdfPages
 
 st.set_page_config(layout="wide", page_title="Solid Surface Pro")
-st.title("📐 Solid Surface Production & Mixed-Batch Optimizer")
+st.title("📐 Solid Surface Production & Deep-Optimization Tool")
 
-# --- SMART SPLIT STRATEGIES ---
+# --- EXPANDED FACTORY SPLIT STRATEGIES ---
+# 23 different slicing ratios to guarantee we find the perfect fit for the scrap voids.
 SPLIT_STRATEGIES = [
-    [0.5, 0.5],       
-    [0.6, 0.4],       
-    [0.75, 0.25],     
-    [0.85, 0.15],     
-    [0.95, 0.05],     
-    [0.98, 0.02],     
-    [0.33, 0.33, 0.34],
-    [0.4, 0.4, 0.2],
-    [0.45, 0.45, 0.1]
+    # 1 JOINT (2 Pieces)
+    [0.5, 0.5], [0.55, 0.45], [0.6, 0.4], [0.65, 0.35],
+    [0.7, 0.3], [0.75, 0.25], [0.8, 0.2], [0.85, 0.15],
+    [0.9, 0.1], [0.95, 0.05], [0.98, 0.02],
+    # 2 JOINTS (3 Pieces) - Fallbacks
+    [0.34, 0.33, 0.33], [0.4, 0.3, 0.3], [0.4, 0.4, 0.2],
+    [0.45, 0.45, 0.1], [0.5, 0.25, 0.25], [0.5, 0.3, 0.2],
+    [0.5, 0.4, 0.1], [0.6, 0.2, 0.2], [0.6, 0.3, 0.1],
+    [0.7, 0.15, 0.15], [0.7, 0.2, 0.1], [0.8, 0.1, 0.1]
 ]
 
 def generate_fragments(w, h, strategy_ratios):
-    """Splits the piece along the longest edge based on the given ratio array."""
     is_w_long = w >= h
     long_side = w if is_w_long else h
     short_side = h if is_w_long else w
@@ -46,13 +47,36 @@ def generate_fragments(w, h, strategy_ratios):
     return res
 
 def get_mandatory_fragments(w, h, eff_w, eff_h):
-    """Finds the best split strategy for pieces that are physically larger than the raw slab."""
     for strategy in SPLIT_STRATEGIES:
         frags = generate_fragments(w, h, strategy)
         if all(f['w'] <= eff_w and f['h'] <= eff_h for f in frags):
             return frags
-    # Extreme fallback for massive pieces (e.g. 10 meters long)
-    return generate_fragments(w, h, [0.33, 0.33, 0.34])
+    return generate_fragments(w, h, [0.34, 0.33, 0.33])
+
+# --- DEEP HEURISTIC PACKER ALGORITHM ---
+def can_pack(rects_to_pack, num_slabs, sheet_w, sheet_h, kerf):
+    """
+    Attempts to pack the layout using multiple distinct geometric algorithms.
+    If one fails due to heuristic error, the other might succeed.
+    """
+    algorithms = [
+        (rectpack.MaxRectsBlsf, rectpack.SORT_AREA),      # Best Long Side Fit
+        (rectpack.MaxRectsBssf, rectpack.SORT_PERIMETER)  # Best Short Side Fit
+    ]
+    
+    last_packer = None
+    for algo, sort_method in algorithms:
+        p = newPacker(rotation=True, pack_algo=algo, sort_algo=sort_method)
+        p.add_bin(sheet_w, sheet_h, count=num_slabs)
+        for r in rects_to_pack:
+            p.add_rect(r['w'] + kerf, r['h'] + kerf, rid=r['rid'])
+        p.pack()
+        
+        last_packer = p
+        if len(p.rect_list()) == len(rects_to_pack):
+            return p, True # Complete success!
+            
+    return last_packer, False # Both algorithms failed to fit these pieces in this many slabs
 
 # --- SIDEBAR SETTINGS ---
 st.sidebar.header("1. Material Settings")
@@ -63,9 +87,9 @@ kerf = st.sidebar.number_input("Blade Kerf (mm)", value=3)
 st.sidebar.markdown("---")
 st.sidebar.header("2. Optimization Rules")
 is_seamless = st.sidebar.checkbox(
-    "Enable Optional Scrap Recycling", 
+    "Enable Deep Scrap Recycling", 
     value=True, 
-    help="Check to recycle gray waste into standard parts. Uncheck for colors where seams are highly visible (Oversized parts will still be jointed)."
+    help="Hunts for tightest yields using up to 2-joints per recycled piece."
 )
 
 st.sidebar.markdown("---")
@@ -74,7 +98,7 @@ st.sidebar.markdown("🟦 **Blue:** Clean Solid Cut")
 st.sidebar.markdown("🟩 **Green:** Jointed / Fragment Cut")
 st.sidebar.markdown("⬜ **Gray:** Dead Waste")
 
-# --- INPUT AREA (MULTI-ITEM CUT LIST) ---
+# --- INPUT AREA ---
 st.header("Build Target Order List")
 if 'parts' not in st.session_state: 
     st.session_state.parts = []
@@ -101,7 +125,7 @@ if st.session_state.parts:
     st.info(f"📐 **Total Project Area:** {total_order_sqm:.2f} SQM")
         
     col_run, col_clear = st.columns([1, 5])
-    run_calc = col_run.button("Run Strict Mathematical Optimizer", type="primary")
+    run_calc = col_run.button("Run Deep Heuristic Optimizer", type="primary")
     if col_clear.button("Clear Entire List"):
         st.session_state.parts = []
         st.rerun()
@@ -115,7 +139,6 @@ if st.session_state.parts:
         mandatory_oversized = []
         target_id = 0
         
-        # 1. Separate pieces that fit vs pieces that are impossible to cut without a joint
         for p in st.session_state.parts:
             for _ in range(p['q']):
                 if p['w'] > eff_w or p['h'] > eff_h:
@@ -133,38 +156,31 @@ if st.session_state.parts:
         final_rects = []
         assembled_pieces_data = [] 
         
-        # Determine strict minimum slabs to prevent looping from 1
         slab_area = sheet_w * sheet_h
         theoretical_min_slabs = max(1, math.ceil(true_delivered_area / slab_area))
         max_test_slabs = theoretical_min_slabs + 25 
         
-        with st.spinner('Running strict factory optimization...'):
+        with st.spinner('Running deep heuristic permutations... this may take a few seconds...'):
             for test_slabs in range(theoretical_min_slabs, max_test_slabs):
                 
-                # --- BASE PACK (Standards + Mandatory Oversized) ---
-                packer_solid = newPacker(rotation=True)
-                packer_solid.add_bin(sheet_w, sheet_h, count=test_slabs)
-                
+                # --- BASE PACK ---
+                base_rects_input = []
                 for t in standard_targets:
-                    packer_solid.add_rect(t['w'] + kerf, t['h'] + kerf, rid=f"solid_{t['id']}_{t['w']}_{t['h']}")
-                    
+                    base_rects_input.append({'w': t['w'], 'h': t['h'], 'rid': f"solid_{t['id']}_{t['w']}_{t['h']}"})
                 for mt in mandatory_oversized:
                     for f_idx, f in enumerate(mt['frags']):
-                        packer_solid.add_rect(f['w'] + kerf, f['h'] + kerf, rid=f"mand_{mt['id']}_{mt['w']}_{mt['h']}_{f_idx}")
+                        base_rects_input.append({'w': f['w'], 'h': f['h'], 'rid': f"mand_{mt['id']}_{mt['w']}_{mt['h']}_{f_idx}"})
                         
-                packer_solid.pack()
-                base_rects = packer_solid.rect_list()
+                packer_base, is_base_success = can_pack(base_rects_input, test_slabs, sheet_w, sheet_h, kerf)
+                base_rects = packer_base.rect_list()
                 
                 packed_solid_ids = set([int(str(r[5]).split('_')[1]) for r in base_rects if str(r[5]).startswith('solid')])
                 packed_mand_rids = set([str(r[5]) for r in base_rects if str(r[5]).startswith('mand')])
-                
                 expected_mand = sum(len(mt['frags']) for mt in mandatory_oversized)
                 
-                # If we can't even fit the mandatory oversized parts, we definitely need more slabs
                 if len(packed_mand_rids) < expected_mand:
-                    continue
+                    continue # Try next slab count
                     
-                # If everything fit perfectly, we are done!
                 if len(packed_solid_ids) == len(standard_targets):
                     final_slabs = test_slabs
                     final_solid_count = len(standard_targets)
@@ -172,60 +188,47 @@ if st.session_state.parts:
                     final_rects = base_rects
                     break
                     
-                # --- OPTIONAL SCRAP RECYCLING LOOP ---
-                # We hit this if mandatory pieces fit, but we are missing some standard pieces.
+                # --- OPTIONAL DEEP RECYCLING LOOP ---
                 if is_seamless:
                     missing_standard = [t for t in standard_targets if t['id'] not in packed_solid_ids]
                     missing_standard = sorted(missing_standard, key=lambda x: x['w'] * x['h'], reverse=True)
                     
                     current_packed_recycled_frags = []
                     all_recycled_packed = True
+                    final_packer_instance = packer_base
                     
                     for target in missing_standard:
                         target_packed = False
                         
                         for strategy in SPLIT_STRATEGIES:
                             frags = generate_fragments(target['w'], target['h'], strategy)
-                            
-                            invalid_strategy = False
-                            for f in frags:
-                                if f['w'] > eff_w or f['h'] > eff_h:
-                                    invalid_strategy = True
-                                    break
-                            if invalid_strategy:
+                            if any(f['w'] > eff_w or f['h'] > eff_h for f in frags):
                                 continue
-                            
-                            test_packer = newPacker(rotation=True)
-                            test_packer.add_bin(sheet_w, sheet_h, count=test_slabs)
-                            
-                            # Reload solids, mandatories, and previous recycled frags
+                                
+                            # Build current simulation layout
+                            test_layout = []
                             for tid in packed_solid_ids:
                                 t = next(x for x in standard_targets if x['id'] == tid)
-                                test_packer.add_rect(t['w'] + kerf, t['h'] + kerf, rid=f"solid_{t['id']}_{t['w']}_{t['h']}")
-                                
+                                test_layout.append({'w': t['w'], 'h': t['h'], 'rid': f"solid_{t['id']}_{t['w']}_{t['h']}"})
                             for mt in mandatory_oversized:
                                 for f_idx, f in enumerate(mt['frags']):
-                                    test_packer.add_rect(f['w'] + kerf, f['h'] + kerf, rid=f"mand_{mt['id']}_{mt['w']}_{mt['h']}_{f_idx}")
-                                
+                                    test_layout.append({'w': f['w'], 'h': f['h'], 'rid': f"mand_{mt['id']}_{mt['w']}_{mt['h']}_{f_idx}"})
                             for f_tuple in current_packed_recycled_frags:
-                                test_packer.add_rect(f_tuple['w'] + kerf, f_tuple['h'] + kerf, rid=f_tuple['rid'])
-                                
+                                test_layout.append({'w': f_tuple['w'], 'h': f_tuple['h'], 'rid': f_tuple['rid']})
                             for f_idx, f in enumerate(frags):
-                                test_packer.add_rect(f['w'] + kerf, f['h'] + kerf, rid=f"rec_{target['id']}_{target['w']}_{target['h']}_{f_idx}")
+                                test_layout.append({'w': f['w'], 'h': f['h'], 'rid': f"rec_{target['id']}_{target['w']}_{target['h']}_{f_idx}"})
                                 
-                            test_packer.pack()
-                            packed_rects_test = test_packer.rect_list()
+                            # Run Deep Heuristic check
+                            test_packer, is_test_success = can_pack(test_layout, test_slabs, sheet_w, sheet_h, kerf)
                             
-                            # STRICT EVICTION CHECK
-                            expected_total = len(packed_solid_ids) + expected_mand + len(current_packed_recycled_frags) + len(frags)
-                            
-                            if len(packed_rects_test) == expected_total:
+                            if is_test_success:
                                 for f_idx, f in enumerate(frags):
                                     current_packed_recycled_frags.append({
                                         'w': f['w'], 'h': f['h'], 
                                         'rid': f"rec_{target['id']}_{target['w']}_{target['h']}_{f_idx}",
                                         'layout': f 
                                     })
+                                final_packer_instance = test_packer
                                 target_packed = True
                                 break 
                                 
@@ -237,31 +240,15 @@ if st.session_state.parts:
                         final_slabs = test_slabs
                         final_solid_count = len(packed_solid_ids)
                         final_recycled_count = len(missing_standard)
-                        
-                        # Generate final coordinates
-                        final_packer = newPacker(rotation=True)
-                        final_packer.add_bin(sheet_w, sheet_h, count=final_slabs)
-                        for tid in packed_solid_ids:
-                            t = next(x for x in standard_targets if x['id'] == tid)
-                            final_packer.add_rect(t['w'] + kerf, t['h'] + kerf, rid=f"solid_{t['id']}_{t['w']}_{t['h']}")
-                        for mt in mandatory_oversized:
-                            for f_idx, f in enumerate(mt['frags']):
-                                final_packer.add_rect(f['w'] + kerf, f['h'] + kerf, rid=f"mand_{mt['id']}_{mt['w']}_{mt['h']}_{f_idx}")
-                        for f_tuple in current_packed_recycled_frags:
-                            final_packer.add_rect(f_tuple['w'] + kerf, f_tuple['h'] + kerf, rid=f_tuple['rid'])
-                            
-                        final_packer.pack()
-                        final_rects = final_packer.rect_list()
+                        final_rects = final_packer_instance.rect_list()
                         break
 
-        # Fallback if loop finishes entirely
         if final_slabs == 0:
             final_slabs = test_slabs
 
         # --- DATA AGGREGATION & GLUE CALCULATION ---
         total_glue_length_mm = 0
         
-        # 1. Process Mandatory Oversized Assembly Maps
         for mt in mandatory_oversized:
             seam_length = mt['h'] if mt['w'] >= mt['h'] else mt['w']
             joints_count = len(mt['frags']) - 1
@@ -270,7 +257,6 @@ if st.session_state.parts:
                 'id': mt['id'], 'w': mt['w'], 'h': mt['h'], 'frags': mt['frags'], 'type': 'Mandatory (Oversized)'
             })
 
-        # 2. Process Optional Recycled Assembly Maps
         if final_recycled_count > 0:
             for t in missing_standard:
                 t_frags = [f['layout'] for f in current_packed_recycled_frags if str(f['rid']).startswith(f"rec_{t['id']}_")]
