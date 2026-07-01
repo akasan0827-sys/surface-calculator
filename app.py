@@ -304,4 +304,8 @@ if st.session_state.parts:
                     ax2.set_title(f"Assembled Product: {asm['w']}x{asm['h']}mm ({joint_text})", fontsize=10)
                     
                     st.pyplot(fig2)
-                    pdf.savefig(fig2,
+                    pdf.savefig(fig2, bbox_inches='tight')
+                    plt.close(fig2)
+
+        st.markdown("---")
+        st.download_button("📄 Export Production PDF", pdf_buffer.getvalue(), "mixed_batch_production.pdf", "application/pdf")
