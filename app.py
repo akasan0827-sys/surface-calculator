@@ -6,19 +6,19 @@ import matplotlib.patches as patches
 import io
 import math
 from matplotlib.backends.backend_pdf import PdfPages
-import os
 
 # --- PAGE CONFIG & S&C ASIA BRANDING ---
-st.set_page_config(layout="wide", page_title="S&C Asia | Production Optimizer")
+# Using the logo as the actual web browser tab icon
+st.set_page_config(layout="wide", page_title="S&C Asia | Production Optimizer", page_icon="logo.png")
 
-# Big, Prominent Logo
 try:
-    # This will display your logo large and front-and-center
-    st.image("logo.png", width=280) 
+    # Places the logo cleanly in the top-left corner of the interface
+    st.logo("logo.png")
 except FileNotFoundError:
-    st.caption("[Logo Missing: Please ensure 'logo.png' is in the same folder as app.py]")
+    pass 
 
-st.title("📐 S&C Asia | Production Optimizer")
+# Clean, professional title without emojis
+st.title("S&C Asia | Production Optimizer")
 st.markdown("**First to Innovative Interior** — Premium Solid Surface Cutting & Yield Management")
 st.markdown("---")
 
@@ -110,12 +110,11 @@ with col_manual:
     st.subheader("🛠️ Manual Input")
     st.markdown("Type dimensions and click **Add** (or press Enter).")
     c1, c2, c3, c4 = st.columns([2, 2, 2, 2])
-    # By removing st.form, we fix the Streamlit "Enter Key" bug entirely.
+    
     w = c1.number_input("Width (mm)", value=1000, min_value=1)
     h = c2.number_input("Height (mm)", value=350, min_value=1)
     q = c3.number_input("Quantity", value=6, min_value=1)
     
-    # Push button down to align with input boxes
     c4.markdown("<br>", unsafe_allow_html=True) 
     if c4.button("➕ Add to List", use_container_width=True):
         st.session_state.parts.append({"w": int(w), "h": int(h), "q": int(q)})
@@ -128,7 +127,6 @@ with col_upload:
         try:
             df = pd.read_excel(uploaded_file)
             
-            # Smart Column Detection (Looks for words like width, w, height, h, qty, quantity)
             w_col = next((c for c in df.columns if 'wid' in str(c).lower() or 'w' == str(c).lower()), None)
             h_col = next((c for c in df.columns if 'hei' in str(c).lower() or 'h' == str(c).lower()), None)
             q_col = next((c for c in df.columns if 'qty' in str(c).lower() or 'q' == str(c).lower() or 'quan' in str(c).lower()), None)
