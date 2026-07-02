@@ -13,22 +13,7 @@ st.set_page_config(layout="wide", page_title="S&C Asia | Production Optimizer", 
 
 try:
     # Places the logo cleanly in the top-left corner of the interface
-# --- IMPROVED LOGO PLACEMENT & VISIBILITY ---
-# Add this block right after st.set_page_config
-st.logo("logo.png")
-
-# Increase logo size via CSS
-st.markdown(
-    """
-    <style>
-    [data-testid="stLogo"] {
-        width: 150px !important; /* Adjust this value to get the exact visibility you want */
-        height: auto !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+    st.logo("logo.png")
 except FileNotFoundError:
     pass 
 
