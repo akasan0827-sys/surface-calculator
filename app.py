@@ -13,7 +13,7 @@ st.set_page_config(layout="wide", page_title="S&C Asia | Production Optimizer", 
 
 try:
     # Places the logo cleanly in the top-left corner of the interface
-    st.logo("logo.png", width=180)
+    st.logo("logo.png")
 except FileNotFoundError:
     pass 
 
