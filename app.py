@@ -1,4 +1,5 @@
 import streamlit as st
+import pandas as pd
 from rectpack import newPacker
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -6,14 +7,21 @@ import io
 import math
 from matplotlib.backends.backend_pdf import PdfPages
 
-st.set_page_config(layout="wide", page_title="Solid Surface Pro")
-st.title("📐 Solid Surface Production & Deep-Optimization Tool")
+# --- PAGE CONFIG & S&C ASIA BRANDING ---
+st.set_page_config(layout="wide", page_title="SNC Asia | Production Optimizer")
 
-# --- EXPANDED FACTORY SPLIT STRATEGIES (For Optional Recycling) ---
+try:
+    st.logo("logo.png") # Automatically places your logo in the top corner
+except:
+    pass # Will gracefully skip if you haven't uploaded logo.png yet
+
+st.title("📐 SNC Asia | Production Optimizer")
+st.markdown("**First to Innovative Interior** — Premium Solid Surface Cutting & Yield Management")
+st.markdown("---")
+
+# --- CORE OPTIMIZATION ENGINE (The Rock-Solid Version) ---
 SPLIT_STRATEGIES = [
-    # 1 JOINT (2 Pieces)
     [0.5, 0.5], [0.6, 0.4], [0.7, 0.3], [0.8, 0.2], [0.9, 0.1], [0.95, 0.05], [0.98, 0.02],
-    # 2 JOINTS (3 Pieces) - For squeezing into tight gaps
     [0.34, 0.33, 0.33], [0.4, 0.4, 0.2], [0.5, 0.3, 0.2], [0.6, 0.2, 0.2],
     [0.7, 0.15, 0.15], [0.8, 0.1, 0.1], [0.9, 0.05, 0.05]
 ]
@@ -29,7 +37,6 @@ def generate_fragments(w, h, strategy_ratios):
         length = math.floor(long_side * ratio)
         frags.append({"l": length, "offset": current_offset})
         current_offset += length
-    
     frags.append({"l": long_side - current_offset, "offset": current_offset})
 
     res = []
@@ -41,16 +48,9 @@ def generate_fragments(w, h, strategy_ratios):
     return res
 
 def piece_fits_slab(f, eff_w, eff_h):
-    """Checks if a piece physically fits on the slab (allowing for 90-degree rotation)."""
-    fits_standard = (f['w'] <= eff_w and f['h'] <= eff_h)
-    fits_rotated = (f['h'] <= eff_w and f['w'] <= eff_h)
-    return fits_standard or fits_rotated
+    return (f['w'] <= eff_w and f['h'] <= eff_h) or (f['h'] <= eff_w and f['w'] <= eff_h)
 
 def get_mandatory_fragments(w, h, eff_w, eff_h):
-    """
-    True Factory Slicer: Extracts the absolute maximum contiguous length (eff_w) 
-    to preserve vein structure and minimize slab waste, recursively slicing the remainder.
-    """
     frags = []
     curr_x, curr_y = 0, 0
     rem_w, rem_h = w, h
@@ -66,20 +66,15 @@ def get_mandatory_fragments(w, h, eff_w, eff_h):
             rem_h -= cut_h
         curr_x += cut_w
         rem_w -= cut_w
-        
     return frags
 
 def can_pack(rects_to_pack, num_slabs, sheet_w, sheet_h, kerf):
-    """Attempts to pack the layout cleanly."""
     p = newPacker(rotation=True)
     p.add_bin(sheet_w, sheet_h, count=num_slabs)
     for r in rects_to_pack:
         p.add_rect(r['w'] + kerf, r['h'] + kerf, rid=r['rid'])
     p.pack()
-    
-    if len(p.rect_list()) == len(rects_to_pack):
-        return p, True 
-    return p, False 
+    return p, len(p.rect_list()) == len(rects_to_pack)
 
 # --- SIDEBAR SETTINGS ---
 st.sidebar.header("1. Material Settings")
@@ -92,7 +87,7 @@ st.sidebar.header("2. Optimization Rules")
 is_seamless = st.sidebar.checkbox(
     "Enable Optional Scrap Recycling", 
     value=True, 
-    help="Check to recycle gray waste into standard parts (max 2 joints). Uncheck for veined colors where you want zero optional joints."
+    help="Check to recycle gray waste into standard parts. Uncheck for veined colors where you want zero optional joints."
 )
 
 st.sidebar.markdown("---")
@@ -102,34 +97,44 @@ st.sidebar.markdown("🟧 **Orange:** Mandatory Joint (Oversized)")
 st.sidebar.markdown("🟩 **Green:** Optional Recycled Scrap")
 st.sidebar.markdown("⬜ **Gray:** Dead Waste")
 
-# --- INPUT AREA ---
-st.header("Build Target Order List")
+# --- UI: STABLE LIST MANAGEMENT ---
+st.header("Build Project Cut List")
+
 if 'parts' not in st.session_state: 
     st.session_state.parts = []
-    
-with st.form("input", clear_on_submit=True):
-    c1, c2, c3 = st.columns(3)
+
+# Input Form
+with st.form("input_form", clear_on_submit=True):
+    c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
     w = c1.number_input("Width (mm)", value=1000, min_value=1)
     h = c2.number_input("Height (mm)", value=350, min_value=1)
     q = c3.number_input("Quantity", value=6, min_value=1)
+    submit = c4.form_submit_button("➕ Add to List")
     
-    if st.form_submit_button("Add Size to Cut List"): 
+    if submit:
         st.session_state.parts.append({"w": w, "h": h, "q": q})
+        st.rerun()
 
+# Display List with Individual Delete Buttons
 if st.session_state.parts:
     st.subheader("Current Order Cut List")
     total_order_sqm = 0
     
-    for idx, p in enumerate(st.session_state.parts):
+    for i, p in enumerate(st.session_state.parts):
         sqm_per_pc = (p['w'] * p['h']) / 1_000_000
         row_total_sqm = sqm_per_pc * p['q']
         total_order_sqm += row_total_sqm
-        st.write(f"• **{p['q']} pcs** of {p['w']}x{p['h']}mm &nbsp;&nbsp;*( {sqm_per_pc:.2f} SQM/pc | Total: {row_total_sqm:.2f} SQM )*")
         
+        col_text, col_btn = st.columns([5, 1])
+        col_text.write(f"• **{p['q']} pcs** of {p['w']}x{p['h']}mm &nbsp;&nbsp;*( {sqm_per_pc:.2f} SQM/pc | Total: {row_total_sqm:.2f} SQM )*")
+        if col_btn.button("🗑️ Remove", key=f"del_{i}"):
+            st.session_state.parts.pop(i)
+            st.rerun()
+            
     st.info(f"📐 **Total Project Area:** {total_order_sqm:.2f} SQM")
-        
-    col_run, col_clear = st.columns([1, 5])
-    run_calc = col_run.button("Run Deep Heuristic Optimizer", type="primary")
+    
+    col_run, col_clear = st.columns([2, 4])
+    run_calc = col_run.button("Run Deep Heuristic Optimizer", type="primary", use_container_width=True)
     if col_clear.button("Clear Entire List"):
         st.session_state.parts = []
         st.rerun()
@@ -167,7 +172,7 @@ if st.session_state.parts:
         with st.spinner('Calculating tightest factory layout... this may take a few seconds...'):
             for test_slabs in range(theoretical_min_slabs, max_test_slabs):
                 
-                # --- BASE PACK (Solid + Mandatory) ---
+                # --- BASE PACK ---
                 base_rects_input = []
                 for t in standard_targets:
                     base_rects_input.append({'w': t['w'], 'h': t['h'], 'rid': f"solid_{t['id']}_{t['w']}_{t['h']}"})
@@ -183,7 +188,7 @@ if st.session_state.parts:
                 expected_mand = sum(len(mt['frags']) for mt in mandatory_oversized)
                 
                 if len(packed_mand_rids) < expected_mand:
-                    continue # Not enough room for mandatory cuts, add another slab
+                    continue 
                     
                 if len(packed_solid_ids) == len(standard_targets):
                     final_slabs = test_slabs
@@ -192,7 +197,7 @@ if st.session_state.parts:
                     final_rects = base_rects
                     break
                     
-                # --- OPTIONAL DEEP RECYCLING LOOP ---
+                # --- DEEP RECYCLING LOOP ---
                 if is_seamless:
                     missing_standard = [t for t in standard_targets if t['id'] not in packed_solid_ids]
                     missing_standard = sorted(missing_standard, key=lambda x: x['w'] * x['h'], reverse=True)
@@ -248,16 +253,13 @@ if st.session_state.parts:
         if final_slabs == 0:
             final_slabs = test_slabs
 
-        # --- DATA AGGREGATION & GLUE CALCULATION ---
         total_glue_length_mm = 0
         
         for mt in mandatory_oversized:
             seam_length = mt['h'] if mt['w'] >= mt['h'] else mt['w']
             joints_count = len(mt['frags']) - 1
             total_glue_length_mm += (joints_count * seam_length)
-            assembled_pieces_data.append({
-                'id': mt['id'], 'w': mt['w'], 'h': mt['h'], 'frags': mt['frags'], 'type': 'Mandatory Joint'
-            })
+            assembled_pieces_data.append({'id': mt['id'], 'w': mt['w'], 'h': mt['h'], 'frags': mt['frags'], 'type': 'Mandatory Joint'})
 
         if final_recycled_count > 0:
             for t in missing_standard:
@@ -266,18 +268,13 @@ if st.session_state.parts:
                     seam_length = t['h'] if t['w'] >= t['h'] else t['w']
                     joints_count = len(t_frags) - 1
                     total_glue_length_mm += (joints_count * seam_length)
-                    assembled_pieces_data.append({
-                        'id': t['id'], 'w': t['w'], 'h': t['h'], 'frags': t_frags, 'type': 'Recycled Scrap'
-                    })
+                    assembled_pieces_data.append({'id': t['id'], 'w': t['w'], 'h': t['h'], 'frags': t_frags, 'type': 'Recycled Scrap'})
                     
         total_glue_length_cm = total_glue_length_mm / 10.0
-
-        # --- YIELD CALCULATION ---
         total_material_area = final_slabs * sheet_w * sheet_h
         yield_percentage = (true_delivered_area / total_material_area) * 100 if total_material_area > 0 else 0
         total_project_sqm = true_delivered_area / 1_000_000
 
-        # --- UI REPORT ---
         st.markdown("---")
         st.header("3. Production & Material Efficiency Report")
         
@@ -289,7 +286,13 @@ if st.session_state.parts:
         
         st.success(f"📋 **Mixed Batch Output:** {final_solid_count} pieces clean-cut. {len(mandatory_oversized)} mandatory joints applied. {final_recycled_count} pieces optionally recycled.")
 
-        # --- VISUALIZATION & PDF EXPORT ---
+        # Excel Export
+        output_excel = io.BytesIO()
+        with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
+            pd.DataFrame(st.session_state.parts).to_excel(writer, index=False, sheet_name='CutList')
+        st.download_button("📥 Export Cut List to Excel", data=output_excel.getvalue(), file_name="snc_cut_list.xlsx", mime="application/vnd.ms-excel")
+
+        # Visuals
         pdf_buffer = io.BytesIO()
         with PdfPages(pdf_buffer) as pdf:
             st.subheader("Factory Floor: Cutting Map")
@@ -306,19 +309,19 @@ if st.session_state.parts:
                     if rid.startswith('solid'):
                         parts = rid.split('_')
                         target_w, target_h = parts[2], parts[3]
-                        ax.add_patch(patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#003366', facecolor='#66b3ff', lw=1.5))
+                        ax.add_patch(patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#2c3e50', facecolor='#85c1e9', lw=1.5))
                         ax.text(rx + act_w/2, ry + act_h/2, f"SOLID\n{target_w}x{target_h}", color='black', weight='bold', ha='center', va='center', fontsize=8)
                         
                     elif rid.startswith('mand'):
                         parts = rid.split('_')
                         target_w, target_h = parts[2], parts[3]
-                        ax.add_patch(patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#cc6600', facecolor='#ffb366', lw=1.5, linestyle='--'))
+                        ax.add_patch(patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#d35400', facecolor='#f5b041', lw=1.5, linestyle='--'))
                         ax.text(rx + act_w/2, ry + act_h/2, f"MANDATORY\n{int(act_w)}x{int(act_h)}\n(For {target_w}x{target_h})", color='black', ha='center', va='center', fontsize=7)
                         
                     elif rid.startswith('rec'):
                         parts = rid.split('_')
                         target_w, target_h = parts[2], parts[3]
-                        ax.add_patch(patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#006600', facecolor='#99ff99', lw=1.5, linestyle='--'))
+                        ax.add_patch(patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#1e8449', facecolor='#82e0aa', lw=1.5, linestyle='--'))
                         ax.text(rx + act_w/2, ry + act_h/2, f"FRAG\n{int(act_w)}x{int(act_h)}\n(For {target_w}x{target_h})", color='black', ha='center', va='center', fontsize=7)
                 
                 ax.set_xlim(0, sheet_w)
@@ -326,7 +329,6 @@ if st.session_state.parts:
                 ax.set_aspect('equal')
                 ax.axis('off')
                 ax.set_title(f"Slab {bin_idx + 1}", fontsize=11, weight='bold')
-                
                 st.pyplot(fig)
                 pdf.savefig(fig, bbox_inches='tight')
                 plt.close(fig)
@@ -334,17 +336,14 @@ if st.session_state.parts:
             if assembled_pieces_data:
                 st.markdown("---")
                 st.subheader("🧩 Glue Jointing Assembly Maps")
-                st.info("Gather the colored fragments (Orange = Mandatory, Green = Optional Scrap) from the slabs above to assemble these final products.")
                 
                 for asm in assembled_pieces_data:
                     fig2, ax2 = plt.subplots(figsize=(6, 2.5))
                     ax2.add_patch(patches.Rectangle((0,0), asm['w'], asm['h'], facecolor='#f9f9f9', edgecolor='black', lw=2))
                     
                     joint_count = len(asm['frags']) - 1
-                    
-                    # Style based on cut type
-                    edge_c = '#cc6600' if asm['type'] == 'Mandatory Joint' else 'red'
-                    face_c = '#ffb366' if asm['type'] == 'Mandatory Joint' else '#99ff99'
+                    edge_c = '#d35400' if asm['type'] == 'Mandatory Joint' else '#1e8449'
+                    face_c = '#f5b041' if asm['type'] == 'Mandatory Joint' else '#82e0aa'
                     
                     for f in asm['frags']:
                         ax2.add_patch(patches.Rectangle((f['x'], f['y']), f['w'], f['h'], edgecolor=edge_c, linestyle='--', facecolor=face_c, alpha=0.6, lw=1.5))
@@ -355,10 +354,9 @@ if st.session_state.parts:
                     ax2.set_aspect('equal')
                     ax2.axis('off')
                     ax2.set_title(f"Assembled: {asm['w']}x{asm['h']}mm | {asm['type']} | {joint_count} Joints", fontsize=10)
-                    
                     st.pyplot(fig2)
                     pdf.savefig(fig2, bbox_inches='tight')
                     plt.close(fig2)
 
         st.markdown("---")
-        st.download_button("📄 Export Production PDF", pdf_buffer.getvalue(), "mixed_batch_production.pdf", "application/pdf")
+        st.download_button("📄 Export Production PDF", pdf_buffer.getvalue(), "snc_production_map.pdf", "application/pdf")
