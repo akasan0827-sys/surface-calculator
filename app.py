@@ -6,20 +6,23 @@ import matplotlib.patches as patches
 import io
 import math
 from matplotlib.backends.backend_pdf import PdfPages
+import os
 
 # --- PAGE CONFIG & S&C ASIA BRANDING ---
-st.set_page_config(layout="wide", page_title="SNC Asia | Production Optimizer")
+st.set_page_config(layout="wide", page_title="S&C Asia | Production Optimizer")
 
+# Big, Prominent Logo
 try:
-    st.logo("logo.png") # Automatically places your logo in the top corner
-except:
-    pass # Will gracefully skip if you haven't uploaded logo.png yet
+    # This will display your logo large and front-and-center
+    st.image("logo.png", width=280) 
+except FileNotFoundError:
+    st.caption("[Logo Missing: Please ensure 'logo.png' is in the same folder as app.py]")
 
-st.title("📐 SNC Asia | Production Optimizer")
+st.title("📐 S&C Asia | Production Optimizer")
 st.markdown("**First to Innovative Interior** — Premium Solid Surface Cutting & Yield Management")
 st.markdown("---")
 
-# --- CORE OPTIMIZATION ENGINE (The Rock-Solid Version) ---
+# --- CORE OPTIMIZATION ENGINE ---
 SPLIT_STRATEGIES = [
     [0.5, 0.5], [0.6, 0.4], [0.7, 0.3], [0.8, 0.2], [0.9, 0.1], [0.95, 0.05], [0.98, 0.02],
     [0.34, 0.33, 0.33], [0.4, 0.4, 0.2], [0.5, 0.3, 0.2], [0.6, 0.2, 0.2],
@@ -97,23 +100,54 @@ st.sidebar.markdown("🟧 **Orange:** Mandatory Joint (Oversized)")
 st.sidebar.markdown("🟩 **Green:** Optional Recycled Scrap")
 st.sidebar.markdown("⬜ **Gray:** Dead Waste")
 
-# --- UI: STABLE LIST MANAGEMENT ---
-st.header("Build Project Cut List")
-
+# --- UI: LIST MANAGEMENT & UPLOADS ---
 if 'parts' not in st.session_state: 
     st.session_state.parts = []
 
-# Input Form
-with st.form("input_form", clear_on_submit=True):
-    c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
+col_manual, col_upload = st.columns([1, 1])
+
+with col_manual:
+    st.subheader("🛠️ Manual Input")
+    st.markdown("Type dimensions and click **Add** (or press Enter).")
+    c1, c2, c3, c4 = st.columns([2, 2, 2, 2])
+    # By removing st.form, we fix the Streamlit "Enter Key" bug entirely.
     w = c1.number_input("Width (mm)", value=1000, min_value=1)
     h = c2.number_input("Height (mm)", value=350, min_value=1)
     q = c3.number_input("Quantity", value=6, min_value=1)
-    submit = c4.form_submit_button("➕ Add to List")
     
-    if submit:
-        st.session_state.parts.append({"w": w, "h": h, "q": q})
+    # Push button down to align with input boxes
+    c4.markdown("<br>", unsafe_allow_html=True) 
+    if c4.button("➕ Add to List", use_container_width=True):
+        st.session_state.parts.append({"w": int(w), "h": int(h), "q": int(q)})
         st.rerun()
+
+with col_upload:
+    st.subheader("📥 Excel Import")
+    uploaded_file = st.file_uploader("Upload Cut List (.xlsx)", type=["xlsx", "xls"])
+    if uploaded_file is not None:
+        try:
+            df = pd.read_excel(uploaded_file)
+            
+            # Smart Column Detection (Looks for words like width, w, height, h, qty, quantity)
+            w_col = next((c for c in df.columns if 'wid' in str(c).lower() or 'w' == str(c).lower()), None)
+            h_col = next((c for c in df.columns if 'hei' in str(c).lower() or 'h' == str(c).lower()), None)
+            q_col = next((c for c in df.columns if 'qty' in str(c).lower() or 'q' == str(c).lower() or 'quan' in str(c).lower()), None)
+            
+            if w_col and h_col and q_col:
+                if st.button("Load Excel Data", type="primary"):
+                    for index, row in df.iterrows():
+                        st.session_state.parts.append({
+                            "w": int(row[w_col]), 
+                            "h": int(row[h_col]), 
+                            "q": int(row[q_col])
+                        })
+                    st.rerun()
+            else:
+                st.error("⚠️ Ensure your Excel file has columns named 'Width', 'Height', and 'Qty'.")
+        except Exception as e:
+            st.error(f"Error reading file: {e}")
+
+st.markdown("---")
 
 # Display List with Individual Delete Buttons
 if st.session_state.parts:
@@ -125,7 +159,7 @@ if st.session_state.parts:
         row_total_sqm = sqm_per_pc * p['q']
         total_order_sqm += row_total_sqm
         
-        col_text, col_btn = st.columns([5, 1])
+        col_text, col_btn = st.columns([6, 1])
         col_text.write(f"• **{p['q']} pcs** of {p['w']}x{p['h']}mm &nbsp;&nbsp;*( {sqm_per_pc:.2f} SQM/pc | Total: {row_total_sqm:.2f} SQM )*")
         if col_btn.button("🗑️ Remove", key=f"del_{i}"):
             st.session_state.parts.pop(i)
@@ -290,7 +324,7 @@ if st.session_state.parts:
         output_excel = io.BytesIO()
         with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
             pd.DataFrame(st.session_state.parts).to_excel(writer, index=False, sheet_name='CutList')
-        st.download_button("📥 Export Cut List to Excel", data=output_excel.getvalue(), file_name="snc_cut_list.xlsx", mime="application/vnd.ms-excel")
+        st.download_button("📥 Export Cut List to Excel", data=output_excel.getvalue(), file_name="S&C_Asia_Cut_List.xlsx", mime="application/vnd.ms-excel")
 
         # Visuals
         pdf_buffer = io.BytesIO()
@@ -359,4 +393,4 @@ if st.session_state.parts:
                     plt.close(fig2)
 
         st.markdown("---")
-        st.download_button("📄 Export Production PDF", pdf_buffer.getvalue(), "snc_production_map.pdf", "application/pdf")
+        st.download_button("📄 Export Production PDF", pdf_buffer.getvalue(), "S&C_Asia_Production_Map.pdf", "application/pdf")
