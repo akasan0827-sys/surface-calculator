@@ -1,5 +1,5 @@
 import streamlit as st
-from rectpack import newPacker, SORT_AREA, SORT_PERIMETER, SORT_SSIDE, SORT_LSIDE
+from rectpack import newPacker
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import io
@@ -10,6 +10,7 @@ st.set_page_config(layout="wide", page_title="Solid Surface Pro")
 st.title("📐 Solid Surface Production & Deep-Optimization Tool")
 
 # --- EXPANDED FACTORY SPLIT STRATEGIES ---
+# 23 different slicing ratios to guarantee we find the perfect fit for the scrap voids.
 SPLIT_STRATEGIES = [
     # 1 JOINT (2 Pieces)
     [0.5, 0.5], [0.55, 0.45], [0.6, 0.4], [0.65, 0.35],
@@ -57,27 +58,18 @@ def get_mandatory_fragments(w, h, eff_w, eff_h):
             return frags
     return generate_fragments(w, h, [0.34, 0.33, 0.33])
 
-# --- DEEP HEURISTIC PACKER ALGORITHM ---
+# --- CLOUD-SAFE HEURISTIC PACKER ---
 def can_pack(rects_to_pack, num_slabs, sheet_w, sheet_h, kerf):
-    """
-    Attempts to pack the layout using multiple distinct sorting algorithms.
-    If one fails to squeeze everything in, the others might find the perfect arrangement.
-    """
-    algorithms = [SORT_AREA, SORT_PERIMETER, SORT_SSIDE, SORT_LSIDE]
+    """Attempts to pack the layout cleanly."""
+    p = newPacker(rotation=True)
+    p.add_bin(sheet_w, sheet_h, count=num_slabs)
+    for r in rects_to_pack:
+        p.add_rect(r['w'] + kerf, r['h'] + kerf, rid=r['rid'])
+    p.pack()
     
-    last_packer = None
-    for sort_method in algorithms:
-        p = newPacker(rotation=True, sort_algo=sort_method)
-        p.add_bin(sheet_w, sheet_h, count=num_slabs)
-        for r in rects_to_pack:
-            p.add_rect(r['w'] + kerf, r['h'] + kerf, rid=r['rid'])
-        p.pack()
-        
-        last_packer = p
-        if len(p.rect_list()) == len(rects_to_pack):
-            return p, True 
-            
-    return last_packer, False 
+    if len(p.rect_list()) == len(rects_to_pack):
+        return p, True 
+    return p, False 
 
 # --- SIDEBAR SETTINGS ---
 st.sidebar.header("1. Material Settings")
