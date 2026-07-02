@@ -9,18 +9,13 @@ from matplotlib.backends.backend_pdf import PdfPages
 st.set_page_config(layout="wide", page_title="Solid Surface Pro")
 st.title("📐 Solid Surface Production & Deep-Optimization Tool")
 
-# --- EXPANDED FACTORY SPLIT STRATEGIES ---
-# 23 different slicing ratios to guarantee we find the perfect fit for the scrap voids.
+# --- EXPANDED FACTORY SPLIT STRATEGIES (For Optional Recycling) ---
 SPLIT_STRATEGIES = [
     # 1 JOINT (2 Pieces)
-    [0.5, 0.5], [0.55, 0.45], [0.6, 0.4], [0.65, 0.35],
-    [0.7, 0.3], [0.75, 0.25], [0.8, 0.2], [0.85, 0.15],
-    [0.9, 0.1], [0.95, 0.05], [0.98, 0.02],
-    # 2 JOINTS (3 Pieces) - Fallbacks
-    [0.34, 0.33, 0.33], [0.4, 0.3, 0.3], [0.4, 0.4, 0.2],
-    [0.45, 0.45, 0.1], [0.5, 0.25, 0.25], [0.5, 0.3, 0.2],
-    [0.5, 0.4, 0.1], [0.6, 0.2, 0.2], [0.6, 0.3, 0.1],
-    [0.7, 0.15, 0.15], [0.7, 0.2, 0.1], [0.8, 0.1, 0.1]
+    [0.5, 0.5], [0.6, 0.4], [0.7, 0.3], [0.8, 0.2], [0.9, 0.1], [0.95, 0.05], [0.98, 0.02],
+    # 2 JOINTS (3 Pieces) - For squeezing into tight gaps
+    [0.34, 0.33, 0.33], [0.4, 0.4, 0.2], [0.5, 0.3, 0.2], [0.6, 0.2, 0.2],
+    [0.7, 0.15, 0.15], [0.8, 0.1, 0.1], [0.9, 0.05, 0.05]
 ]
 
 def generate_fragments(w, h, strategy_ratios):
@@ -52,13 +47,28 @@ def piece_fits_slab(f, eff_w, eff_h):
     return fits_standard or fits_rotated
 
 def get_mandatory_fragments(w, h, eff_w, eff_h):
-    for strategy in SPLIT_STRATEGIES:
-        frags = generate_fragments(w, h, strategy)
-        if all(piece_fits_slab(f, eff_w, eff_h) for f in frags):
-            return frags
-    return generate_fragments(w, h, [0.34, 0.33, 0.33])
+    """
+    True Factory Slicer: Extracts the absolute maximum contiguous length (eff_w) 
+    to preserve vein structure and minimize slab waste, recursively slicing the remainder.
+    """
+    frags = []
+    curr_x, curr_y = 0, 0
+    rem_w, rem_h = w, h
 
-# --- CLOUD-SAFE HEURISTIC PACKER ---
+    while rem_w > 0:
+        cut_w = min(rem_w, eff_w)
+        rem_h = h
+        curr_y = 0
+        while rem_h > 0:
+            cut_h = min(rem_h, eff_h)
+            frags.append({'w': cut_w, 'h': cut_h, 'x': curr_x, 'y': curr_y})
+            curr_y += cut_h
+            rem_h -= cut_h
+        curr_x += cut_w
+        rem_w -= cut_w
+        
+    return frags
+
 def can_pack(rects_to_pack, num_slabs, sheet_w, sheet_h, kerf):
     """Attempts to pack the layout cleanly."""
     p = newPacker(rotation=True)
@@ -80,15 +90,16 @@ kerf = st.sidebar.number_input("Blade Kerf (mm)", value=3)
 st.sidebar.markdown("---")
 st.sidebar.header("2. Optimization Rules")
 is_seamless = st.sidebar.checkbox(
-    "Enable Deep Scrap Recycling", 
+    "Enable Optional Scrap Recycling", 
     value=True, 
-    help="Hunts for tightest yields using up to 2-joints per recycled piece."
+    help="Check to recycle gray waste into standard parts (max 2 joints). Uncheck for veined colors where you want zero optional joints."
 )
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### Visual Key")
 st.sidebar.markdown("🟦 **Blue:** Clean Solid Cut")
-st.sidebar.markdown("🟩 **Green:** Jointed / Fragment Cut")
+st.sidebar.markdown("🟧 **Orange:** Mandatory Joint (Oversized)")
+st.sidebar.markdown("🟩 **Green:** Optional Recycled Scrap")
 st.sidebar.markdown("⬜ **Gray:** Dead Waste")
 
 # --- INPUT AREA ---
@@ -151,9 +162,9 @@ if st.session_state.parts:
         
         slab_area = sheet_w * sheet_h
         theoretical_min_slabs = max(1, math.ceil(true_delivered_area / slab_area))
-        max_test_slabs = theoretical_min_slabs + 30 
+        max_test_slabs = theoretical_min_slabs + 25 
         
-        with st.spinner('Running deep heuristic permutations... this may take a few seconds...'):
+        with st.spinner('Calculating tightest factory layout... this may take a few seconds...'):
             for test_slabs in range(theoretical_min_slabs, max_test_slabs):
                 
                 # --- BASE PACK (Solid + Mandatory) ---
@@ -172,7 +183,7 @@ if st.session_state.parts:
                 expected_mand = sum(len(mt['frags']) for mt in mandatory_oversized)
                 
                 if len(packed_mand_rids) < expected_mand:
-                    continue # Not enough room for mandatories, bump up slab count
+                    continue # Not enough room for mandatory cuts, add another slab
                     
                 if len(packed_solid_ids) == len(standard_targets):
                     final_slabs = test_slabs
@@ -195,8 +206,6 @@ if st.session_state.parts:
                         
                         for strategy in SPLIT_STRATEGIES:
                             frags = generate_fragments(target['w'], target['h'], strategy)
-                            
-                            # Verify physical possibility of the cuts before running heavy math
                             if any(not piece_fits_slab(f, eff_w, eff_h) for f in frags):
                                 continue
                                 
@@ -247,7 +256,7 @@ if st.session_state.parts:
             joints_count = len(mt['frags']) - 1
             total_glue_length_mm += (joints_count * seam_length)
             assembled_pieces_data.append({
-                'id': mt['id'], 'w': mt['w'], 'h': mt['h'], 'frags': mt['frags'], 'type': 'Mandatory (Oversized)'
+                'id': mt['id'], 'w': mt['w'], 'h': mt['h'], 'frags': mt['frags'], 'type': 'Mandatory Joint'
             })
 
         if final_recycled_count > 0:
@@ -278,7 +287,7 @@ if st.session_state.parts:
         col_m3.metric("🔥 True Material Yield", f"{yield_percentage:.1f}%")
         col_m4.metric("💧 Est. Glue Required", f"{total_glue_length_cm:.1f} CM")
         
-        st.success(f"📋 **Mixed Batch Output:** {final_solid_count} pieces clean-cut. {len(mandatory_oversized)} mandatory joints applied. {final_recycled_count} pieces recycled dynamically.")
+        st.success(f"📋 **Mixed Batch Output:** {final_solid_count} pieces clean-cut. {len(mandatory_oversized)} mandatory joints applied. {final_recycled_count} pieces optionally recycled.")
 
         # --- VISUALIZATION & PDF EXPORT ---
         pdf_buffer = io.BytesIO()
@@ -299,7 +308,14 @@ if st.session_state.parts:
                         target_w, target_h = parts[2], parts[3]
                         ax.add_patch(patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#003366', facecolor='#66b3ff', lw=1.5))
                         ax.text(rx + act_w/2, ry + act_h/2, f"SOLID\n{target_w}x{target_h}", color='black', weight='bold', ha='center', va='center', fontsize=8)
-                    else:
+                        
+                    elif rid.startswith('mand'):
+                        parts = rid.split('_')
+                        target_w, target_h = parts[2], parts[3]
+                        ax.add_patch(patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#cc6600', facecolor='#ffb366', lw=1.5, linestyle='--'))
+                        ax.text(rx + act_w/2, ry + act_h/2, f"MANDATORY\n{int(act_w)}x{int(act_h)}\n(For {target_w}x{target_h})", color='black', ha='center', va='center', fontsize=7)
+                        
+                    elif rid.startswith('rec'):
                         parts = rid.split('_')
                         target_w, target_h = parts[2], parts[3]
                         ax.add_patch(patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#006600', facecolor='#99ff99', lw=1.5, linestyle='--'))
@@ -318,7 +334,7 @@ if st.session_state.parts:
             if assembled_pieces_data:
                 st.markdown("---")
                 st.subheader("🧩 Glue Jointing Assembly Maps")
-                st.info("Gather the specific green 'FRAG' pieces from the slabs to assemble these final jointed products.")
+                st.info("Gather the colored fragments (Orange = Mandatory, Green = Optional Scrap) from the slabs above to assemble these final products.")
                 
                 for asm in assembled_pieces_data:
                     fig2, ax2 = plt.subplots(figsize=(6, 2.5))
@@ -326,8 +342,12 @@ if st.session_state.parts:
                     
                     joint_count = len(asm['frags']) - 1
                     
+                    # Style based on cut type
+                    edge_c = '#cc6600' if asm['type'] == 'Mandatory Joint' else 'red'
+                    face_c = '#ffb366' if asm['type'] == 'Mandatory Joint' else '#99ff99'
+                    
                     for f in asm['frags']:
-                        ax2.add_patch(patches.Rectangle((f['x'], f['y']), f['w'], f['h'], edgecolor='red', linestyle='--', facecolor='#99ff99', alpha=0.6, lw=1.5))
+                        ax2.add_patch(patches.Rectangle((f['x'], f['y']), f['w'], f['h'], edgecolor=edge_c, linestyle='--', facecolor=face_c, alpha=0.6, lw=1.5))
                         ax2.text(f['x'] + f['w']/2, f['y'] + f['h']/2, f"{int(f['w'])}x{int(f['h'])}", color='black', weight='bold', ha='center', va='center', fontsize=9)
                     
                     ax2.set_xlim(0, asm['w'])
