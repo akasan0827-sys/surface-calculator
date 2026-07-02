@@ -1,6 +1,5 @@
 import streamlit as st
-import rectpack
-from rectpack import newPacker
+from rectpack import newPacker, SORT_AREA, SORT_PERIMETER, SORT_SSIDE, SORT_LSIDE
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import io
@@ -11,7 +10,6 @@ st.set_page_config(layout="wide", page_title="Solid Surface Pro")
 st.title("📐 Solid Surface Production & Deep-Optimization Tool")
 
 # --- EXPANDED FACTORY SPLIT STRATEGIES ---
-# 23 different slicing ratios to guarantee we find the perfect fit for the scrap voids.
 SPLIT_STRATEGIES = [
     # 1 JOINT (2 Pieces)
     [0.5, 0.5], [0.55, 0.45], [0.6, 0.4], [0.65, 0.35],
@@ -46,27 +44,30 @@ def generate_fragments(w, h, strategy_ratios):
             res.append({"w": short_side, "h": f['l'], "x": 0, "y": f['offset']})
     return res
 
+def piece_fits_slab(f, eff_w, eff_h):
+    """Checks if a piece physically fits on the slab (allowing for 90-degree rotation)."""
+    fits_standard = (f['w'] <= eff_w and f['h'] <= eff_h)
+    fits_rotated = (f['h'] <= eff_w and f['w'] <= eff_h)
+    return fits_standard or fits_rotated
+
 def get_mandatory_fragments(w, h, eff_w, eff_h):
     for strategy in SPLIT_STRATEGIES:
         frags = generate_fragments(w, h, strategy)
-        if all(f['w'] <= eff_w and f['h'] <= eff_h for f in frags):
+        if all(piece_fits_slab(f, eff_w, eff_h) for f in frags):
             return frags
     return generate_fragments(w, h, [0.34, 0.33, 0.33])
 
 # --- DEEP HEURISTIC PACKER ALGORITHM ---
 def can_pack(rects_to_pack, num_slabs, sheet_w, sheet_h, kerf):
     """
-    Attempts to pack the layout using multiple distinct geometric algorithms.
-    If one fails due to heuristic error, the other might succeed.
+    Attempts to pack the layout using multiple distinct sorting algorithms.
+    If one fails to squeeze everything in, the others might find the perfect arrangement.
     """
-    algorithms = [
-        (rectpack.MaxRectsBlsf, rectpack.SORT_AREA),      # Best Long Side Fit
-        (rectpack.MaxRectsBssf, rectpack.SORT_PERIMETER)  # Best Short Side Fit
-    ]
+    algorithms = [SORT_AREA, SORT_PERIMETER, SORT_SSIDE, SORT_LSIDE]
     
     last_packer = None
-    for algo, sort_method in algorithms:
-        p = newPacker(rotation=True, pack_algo=algo, sort_algo=sort_method)
+    for sort_method in algorithms:
+        p = newPacker(rotation=True, sort_algo=sort_method)
         p.add_bin(sheet_w, sheet_h, count=num_slabs)
         for r in rects_to_pack:
             p.add_rect(r['w'] + kerf, r['h'] + kerf, rid=r['rid'])
@@ -74,9 +75,9 @@ def can_pack(rects_to_pack, num_slabs, sheet_w, sheet_h, kerf):
         
         last_packer = p
         if len(p.rect_list()) == len(rects_to_pack):
-            return p, True # Complete success!
+            return p, True 
             
-    return last_packer, False # Both algorithms failed to fit these pieces in this many slabs
+    return last_packer, False 
 
 # --- SIDEBAR SETTINGS ---
 st.sidebar.header("1. Material Settings")
@@ -141,7 +142,7 @@ if st.session_state.parts:
         
         for p in st.session_state.parts:
             for _ in range(p['q']):
-                if p['w'] > eff_w or p['h'] > eff_h:
+                if not piece_fits_slab({'w': p['w'], 'h': p['h']}, eff_w, eff_h):
                     best_frags = get_mandatory_fragments(p['w'], p['h'], eff_w, eff_h)
                     mandatory_oversized.append({
                         'id': target_id, 'w': p['w'], 'h': p['h'], 'frags': best_frags
@@ -158,12 +159,12 @@ if st.session_state.parts:
         
         slab_area = sheet_w * sheet_h
         theoretical_min_slabs = max(1, math.ceil(true_delivered_area / slab_area))
-        max_test_slabs = theoretical_min_slabs + 25 
+        max_test_slabs = theoretical_min_slabs + 30 
         
         with st.spinner('Running deep heuristic permutations... this may take a few seconds...'):
             for test_slabs in range(theoretical_min_slabs, max_test_slabs):
                 
-                # --- BASE PACK ---
+                # --- BASE PACK (Solid + Mandatory) ---
                 base_rects_input = []
                 for t in standard_targets:
                     base_rects_input.append({'w': t['w'], 'h': t['h'], 'rid': f"solid_{t['id']}_{t['w']}_{t['h']}"})
@@ -179,7 +180,7 @@ if st.session_state.parts:
                 expected_mand = sum(len(mt['frags']) for mt in mandatory_oversized)
                 
                 if len(packed_mand_rids) < expected_mand:
-                    continue # Try next slab count
+                    continue # Not enough room for mandatories, bump up slab count
                     
                 if len(packed_solid_ids) == len(standard_targets):
                     final_slabs = test_slabs
@@ -202,10 +203,11 @@ if st.session_state.parts:
                         
                         for strategy in SPLIT_STRATEGIES:
                             frags = generate_fragments(target['w'], target['h'], strategy)
-                            if any(f['w'] > eff_w or f['h'] > eff_h for f in frags):
+                            
+                            # Verify physical possibility of the cuts before running heavy math
+                            if any(not piece_fits_slab(f, eff_w, eff_h) for f in frags):
                                 continue
                                 
-                            # Build current simulation layout
                             test_layout = []
                             for tid in packed_solid_ids:
                                 t = next(x for x in standard_targets if x['id'] == tid)
@@ -218,7 +220,6 @@ if st.session_state.parts:
                             for f_idx, f in enumerate(frags):
                                 test_layout.append({'w': f['w'], 'h': f['h'], 'rid': f"rec_{target['id']}_{target['w']}_{target['h']}_{f_idx}"})
                                 
-                            # Run Deep Heuristic check
                             test_packer, is_test_success = can_pack(test_layout, test_slabs, sheet_w, sheet_h, kerf)
                             
                             if is_test_success:
