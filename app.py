@@ -8,16 +8,13 @@ import math
 from matplotlib.backends.backend_pdf import PdfPages
 
 # --- PAGE CONFIG & S&C ASIA BRANDING ---
-# Using the logo as the actual web browser tab icon
 st.set_page_config(layout="wide", page_title="S&C Asia | Production Optimizer", page_icon="logo.png")
 
 try:
-    # Places the logo cleanly in the top-left corner of the interface
     st.logo("logo.png")
 except FileNotFoundError:
     pass 
 
-# Clean, professional title without emojis
 st.title("S&C Asia | Production Optimizer")
 st.markdown("**First to Innovative Interior** — Premium Solid Surface Cutting & Yield Management")
 st.markdown("---")
@@ -78,6 +75,39 @@ def can_pack(rects_to_pack, num_slabs, sheet_w, sheet_h, kerf):
         p.add_rect(r['w'] + kerf, r['h'] + kerf, rid=r['rid'])
     p.pack()
     return p, len(p.rect_list()) == len(rects_to_pack)
+
+# --- SMART LABELING FUNCTION ---
+def draw_smart_label(ax, text, rx, ry, w, h, container_w, container_h):
+    cx = rx + w / 2
+    cy = ry + h / 2
+    
+    # 1. Good size: Center text horizontally
+    if w >= 180 and h >= 100:
+        ax.text(cx, cy, text, color='black', weight='bold', ha='center', va='center', fontsize=6, clip_on=True)
+        
+    # 2. Tall and narrow: Rotate text 90 degrees
+    elif w < 180 and h >= 180:
+        ax.text(cx, cy, text, color='black', weight='bold', ha='center', va='center', fontsize=6, rotation=90, clip_on=True)
+        
+    # 3. Very small / narrow pieces: Use an arrow!
+    else:
+        # Dynamic offset so arrows point inward from the empty edges of the sheet
+        y_offset = container_h * 0.15 if cy < container_h / 2 else -container_h * 0.15
+        x_offset = container_w * 0.05 if cx < container_w / 2 else -container_w * 0.05
+        
+        ax.annotate(
+            text,
+            xy=(cx, cy),
+            xytext=(cx + x_offset, cy + y_offset),
+            arrowprops=dict(facecolor='black', arrowstyle="->", lw=0.8, color='black'),
+            fontsize=5,
+            color='black',
+            weight='bold',
+            ha='center',
+            va='center',
+            # Adds a tiny white box behind the arrow text so it's always readable
+            bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85) 
+        )
 
 # --- SIDEBAR SETTINGS ---
 st.sidebar.header("1. Material Settings")
@@ -212,7 +242,6 @@ if st.session_state.parts:
         with st.spinner('Calculating tightest factory layout... this may take a few seconds...'):
             for test_slabs in range(theoretical_min_slabs, max_test_slabs):
                 
-                # --- BASE PACK ---
                 base_rects_input = []
                 for t in standard_targets:
                     base_rects_input.append({'w': t['w'], 'h': t['h'], 'rid': f"solid_{t['id']}_{t['w']}_{t['h']}"})
@@ -237,7 +266,6 @@ if st.session_state.parts:
                     final_rects = base_rects
                     break
                     
-                # --- DEEP RECYCLING LOOP ---
                 if is_seamless:
                     missing_standard = [t for t in standard_targets if t['id'] not in packed_solid_ids]
                     missing_standard = sorted(missing_standard, key=lambda x: x['w'] * x['h'], reverse=True)
@@ -299,7 +327,7 @@ if st.session_state.parts:
             seam_length = mt['h'] if mt['w'] >= mt['h'] else mt['w']
             joints_count = len(mt['frags']) - 1
             total_glue_length_mm += (joints_count * seam_length)
-            assembled_pieces_data.append({'id': mt['id'], 'w': mt['w'], 'h': mt['h'], 'frags': mt['frags'], 'type': 'Mandatory Joint'})
+            assembled_pieces_data.append({'id': mt['id'], 'w': mt['w'], 'h': mt['h'], 'frags': mt['frags'], 'type': 'Mandatory'})
 
         if final_recycled_count > 0:
             for t in missing_standard:
@@ -308,7 +336,7 @@ if st.session_state.parts:
                     seam_length = t['h'] if t['w'] >= t['h'] else t['w']
                     joints_count = len(t_frags) - 1
                     total_glue_length_mm += (joints_count * seam_length)
-                    assembled_pieces_data.append({'id': t['id'], 'w': t['w'], 'h': t['h'], 'frags': t_frags, 'type': 'Recycled Scrap'})
+                    assembled_pieces_data.append({'id': t['id'], 'w': t['w'], 'h': t['h'], 'frags': t_frags, 'type': 'Recycled'})
                     
         total_glue_length_cm = total_glue_length_mm / 10.0
         total_material_area = final_slabs * sheet_w * sheet_h
@@ -353,23 +381,20 @@ if st.session_state.parts:
                     if rid.startswith('solid'):
                         target_w, target_h = parts[2], parts[3]
                         ax.add_patch(patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#2c3e50', facecolor='#85c1e9', lw=1.5))
-                        
-                        if act_w > 120 and act_h > 120:
-                            ax.text(rx + act_w/2, ry + act_h/2, f"[{room_name}]\nSOLID\n{target_w}x{target_h}", color='black', weight='bold', ha='center', va='center', fontsize=6, clip_on=True)
+                        label_txt = f"[{room_name}]\n{target_w}x{target_h}"
+                        draw_smart_label(ax, label_txt, rx, ry, act_w, act_h, sheet_w, sheet_h)
                         
                     elif rid.startswith('mand'):
                         target_w, target_h = parts[2], parts[3]
                         ax.add_patch(patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#d35400', facecolor='#f5b041', lw=1.5, linestyle='--'))
-                        
-                        if act_w > 120 and act_h > 120:
-                            ax.text(rx + act_w/2, ry + act_h/2, f"[{room_name}]\nMANDATORY\n{int(act_w)}x{int(act_h)}\n(For {target_w}x{target_h})", color='black', ha='center', va='center', fontsize=5, clip_on=True)
+                        label_txt = f"[{room_name}] MAND.\n{int(act_w)}x{int(act_h)}"
+                        draw_smart_label(ax, label_txt, rx, ry, act_w, act_h, sheet_w, sheet_h)
                         
                     elif rid.startswith('rec'):
                         target_w, target_h = parts[2], parts[3]
                         ax.add_patch(patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#1e8449', facecolor='#82e0aa', lw=1.5, linestyle='--'))
-                        
-                        if act_w > 120 and act_h > 120:
-                            ax.text(rx + act_w/2, ry + act_h/2, f"[{room_name}]\nFRAG\n{int(act_w)}x{int(act_h)}\n(For {target_w}x{target_h})", color='black', ha='center', va='center', fontsize=5, clip_on=True)
+                        label_txt = f"[{room_name}] FRAG\n{int(act_w)}x{int(act_h)}"
+                        draw_smart_label(ax, label_txt, rx, ry, act_w, act_h, sheet_w, sheet_h)
                 
                 ax.set_xlim(0, sheet_w)
                 ax.set_ylim(0, sheet_h)
@@ -390,13 +415,13 @@ if st.session_state.parts:
                     
                     room_name = id_to_room.get(asm['id'], "Unassigned")
                     joint_count = len(asm['frags']) - 1
-                    edge_c = '#d35400' if asm['type'] == 'Mandatory Joint' else '#1e8449'
-                    face_c = '#f5b041' if asm['type'] == 'Mandatory Joint' else '#82e0aa'
+                    edge_c = '#d35400' if asm['type'] == 'Mandatory' else '#1e8449'
+                    face_c = '#f5b041' if asm['type'] == 'Mandatory' else '#82e0aa'
                     
                     for f in asm['frags']:
                         ax2.add_patch(patches.Rectangle((f['x'], f['y']), f['w'], f['h'], edgecolor=edge_c, linestyle='--', facecolor=face_c, alpha=0.6, lw=1.5))
-                        if f['w'] > 80 and f['h'] > 80:
-                            ax2.text(f['x'] + f['w']/2, f['y'] + f['h']/2, f"{int(f['w'])}x{int(f['h'])}", color='black', weight='bold', ha='center', va='center', fontsize=8, clip_on=True)
+                        label_txt = f"{int(f['w'])}x{int(f['h'])}"
+                        draw_smart_label(ax2, label_txt, f['x'], f['y'], f['w'], f['h'], asm['w'], asm['h'])
                     
                     ax2.set_xlim(0, asm['w'])
                     ax2.set_ylim(0, asm['h'])
