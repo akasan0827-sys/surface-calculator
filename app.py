@@ -81,29 +81,28 @@ def draw_smart_label(ax, room_name, piece_type, w_label, h_label, rx, ry, act_w,
     cx = rx + act_w / 2
     cy = ry + act_h / 2
     
+    # Failsafe: if Excel passes an empty cell, name it Unassigned instead of "nan"
+    if pd.isna(room_name) or str(room_name).strip().lower() in ['nan', 'none', '']:
+        room_name = "Unassigned"
+        
     is_wide = act_w >= act_h
 
+    # STRATEGY: NEVER DROP THE ROOM NAME
     # 1. Big pieces -> Multiline text
-    if act_w >= 200 and act_h >= 150:
+    if act_w >= 180 and act_h >= 120:
         text = f"[{room_name}]\n{piece_type}\n{w_label}x{h_label}" if piece_type else f"[{room_name}]\n{w_label}x{h_label}"
         rot = 0
         fs = 6
         
     # 2. Horizontal strips -> Single line horizontal text
     elif is_wide:
-        if act_h >= 60:
-            text = f"[{room_name}] {piece_type} {w_label}x{h_label}" if piece_type else f"[{room_name}] {w_label}x{h_label}"
-        else:
-            text = f"{w_label}x{h_label}" # Omit extra details for super thin strips to save space
+        text = f"[{room_name}] {w_label}x{h_label}"
         rot = 0
         fs = 5
         
     # 3. Vertical strips -> Single line rotated 90 degrees
     else:
-        if act_w >= 60:
-            text = f"[{room_name}] {piece_type} {w_label}x{h_label}" if piece_type else f"[{room_name}] {w_label}x{h_label}"
-        else:
-            text = f"{w_label}x{h_label}"
+        text = f"[{room_name}] {w_label}x{h_label}"
         rot = 90
         fs = 5
 
@@ -426,7 +425,7 @@ if st.session_state.parts:
                     for f in asm['frags']:
                         patch = patches.Rectangle((f['x'], f['y']), f['w'], f['h'], edgecolor=edge_c, linestyle='--', facecolor=face_c, alpha=0.6, lw=1.5)
                         ax2.add_patch(patch)
-                        # Omit piece_type ("") for assembly maps to keep it clean
+                        # Empty string for piece type keeps the assembly diagram clean
                         draw_smart_label(ax2, room_name, "", int(f['w']), int(f['h']), f['x'], f['y'], f['w'], f['h'], patch)
                     
                     ax2.set_xlim(0, asm['w'])
