@@ -76,38 +76,43 @@ def can_pack(rects_to_pack, num_slabs, sheet_w, sheet_h, kerf):
     p.pack()
     return p, len(p.rect_list()) == len(rects_to_pack)
 
-# --- SMART LABELING FUNCTION ---
-def draw_smart_label(ax, text, rx, ry, w, h, container_w, container_h):
-    cx = rx + w / 2
-    cy = ry + h / 2
+# --- SMART LABELING WITH STRICT CLIPPING ---
+def draw_smart_label(ax, room_name, piece_type, w_label, h_label, rx, ry, act_w, act_h, rect_patch):
+    cx = rx + act_w / 2
+    cy = ry + act_h / 2
     
-    # 1. Good size: Center text horizontally
-    if w >= 180 and h >= 100:
-        ax.text(cx, cy, text, color='black', weight='bold', ha='center', va='center', fontsize=6, clip_on=True)
+    is_wide = act_w >= act_h
+
+    # 1. Big pieces -> Multiline text
+    if act_w >= 200 and act_h >= 150:
+        text = f"[{room_name}]\n{piece_type}\n{w_label}x{h_label}" if piece_type else f"[{room_name}]\n{w_label}x{h_label}"
+        rot = 0
+        fs = 6
         
-    # 2. Tall and narrow: Rotate text 90 degrees
-    elif w < 180 and h >= 180:
-        ax.text(cx, cy, text, color='black', weight='bold', ha='center', va='center', fontsize=6, rotation=90, clip_on=True)
+    # 2. Horizontal strips -> Single line horizontal text
+    elif is_wide:
+        if act_h >= 60:
+            text = f"[{room_name}] {piece_type} {w_label}x{h_label}" if piece_type else f"[{room_name}] {w_label}x{h_label}"
+        else:
+            text = f"{w_label}x{h_label}" # Omit extra details for super thin strips to save space
+        rot = 0
+        fs = 5
         
-    # 3. Very small / narrow pieces: Use an arrow!
+    # 3. Vertical strips -> Single line rotated 90 degrees
     else:
-        # Dynamic offset so arrows point inward from the empty edges of the sheet
-        y_offset = container_h * 0.15 if cy < container_h / 2 else -container_h * 0.15
-        x_offset = container_w * 0.05 if cx < container_w / 2 else -container_w * 0.05
-        
-        ax.annotate(
-            text,
-            xy=(cx, cy),
-            xytext=(cx + x_offset, cy + y_offset),
-            arrowprops=dict(facecolor='black', arrowstyle="->", lw=0.8, color='black'),
-            fontsize=5,
-            color='black',
-            weight='bold',
-            ha='center',
-            va='center',
-            # Adds a tiny white box behind the arrow text so it's always readable
-            bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85) 
-        )
+        if act_w >= 60:
+            text = f"[{room_name}] {piece_type} {w_label}x{h_label}" if piece_type else f"[{room_name}] {w_label}x{h_label}"
+        else:
+            text = f"{w_label}x{h_label}"
+        rot = 90
+        fs = 5
+
+    # Draw the text
+    t = ax.text(cx, cy, text, color='black', weight='bold', ha='center', va='center', fontsize=fs, rotation=rot)
+    
+    # THE FIX: Mathematically restrict the text so it can NEVER overlap outside its own piece boundary
+    t.set_clip_path(rect_patch)
+
 
 # --- SIDEBAR SETTINGS ---
 st.sidebar.header("1. Material Settings")
@@ -380,21 +385,21 @@ if st.session_state.parts:
                     
                     if rid.startswith('solid'):
                         target_w, target_h = parts[2], parts[3]
-                        ax.add_patch(patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#2c3e50', facecolor='#85c1e9', lw=1.5))
-                        label_txt = f"[{room_name}]\n{target_w}x{target_h}"
-                        draw_smart_label(ax, label_txt, rx, ry, act_w, act_h, sheet_w, sheet_h)
+                        patch = patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#2c3e50', facecolor='#85c1e9', lw=1.5)
+                        ax.add_patch(patch)
+                        draw_smart_label(ax, room_name, "SOLID", target_w, target_h, rx, ry, act_w, act_h, patch)
                         
                     elif rid.startswith('mand'):
                         target_w, target_h = parts[2], parts[3]
-                        ax.add_patch(patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#d35400', facecolor='#f5b041', lw=1.5, linestyle='--'))
-                        label_txt = f"[{room_name}] MAND.\n{int(act_w)}x{int(act_h)}"
-                        draw_smart_label(ax, label_txt, rx, ry, act_w, act_h, sheet_w, sheet_h)
+                        patch = patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#d35400', facecolor='#f5b041', lw=1.5, linestyle='--')
+                        ax.add_patch(patch)
+                        draw_smart_label(ax, room_name, "MAND.", int(act_w), int(act_h), rx, ry, act_w, act_h, patch)
                         
                     elif rid.startswith('rec'):
                         target_w, target_h = parts[2], parts[3]
-                        ax.add_patch(patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#1e8449', facecolor='#82e0aa', lw=1.5, linestyle='--'))
-                        label_txt = f"[{room_name}] FRAG\n{int(act_w)}x{int(act_h)}"
-                        draw_smart_label(ax, label_txt, rx, ry, act_w, act_h, sheet_w, sheet_h)
+                        patch = patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#1e8449', facecolor='#82e0aa', lw=1.5, linestyle='--')
+                        ax.add_patch(patch)
+                        draw_smart_label(ax, room_name, "FRAG", int(act_w), int(act_h), rx, ry, act_w, act_h, patch)
                 
                 ax.set_xlim(0, sheet_w)
                 ax.set_ylim(0, sheet_h)
@@ -419,9 +424,10 @@ if st.session_state.parts:
                     face_c = '#f5b041' if asm['type'] == 'Mandatory' else '#82e0aa'
                     
                     for f in asm['frags']:
-                        ax2.add_patch(patches.Rectangle((f['x'], f['y']), f['w'], f['h'], edgecolor=edge_c, linestyle='--', facecolor=face_c, alpha=0.6, lw=1.5))
-                        label_txt = f"{int(f['w'])}x{int(f['h'])}"
-                        draw_smart_label(ax2, label_txt, f['x'], f['y'], f['w'], f['h'], asm['w'], asm['h'])
+                        patch = patches.Rectangle((f['x'], f['y']), f['w'], f['h'], edgecolor=edge_c, linestyle='--', facecolor=face_c, alpha=0.6, lw=1.5)
+                        ax2.add_patch(patch)
+                        # Omit piece_type ("") for assembly maps to keep it clean
+                        draw_smart_label(ax2, room_name, "", int(f['w']), int(f['h']), f['x'], f['y'], f['w'], f['h'], patch)
                     
                     ax2.set_xlim(0, asm['w'])
                     ax2.set_ylim(0, asm['h'])
