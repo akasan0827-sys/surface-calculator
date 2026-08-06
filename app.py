@@ -109,15 +109,16 @@ col_manual, col_upload = st.columns([1, 1])
 with col_manual:
     st.subheader("🛠️ Manual Input")
     st.markdown("Type dimensions and click **Add** (or press Enter).")
-    c1, c2, c3, c4 = st.columns([2, 2, 2, 2])
+    c_room, c1, c2, c3, c4 = st.columns([2, 2, 2, 2, 2])
     
+    room = c_room.text_input("Room/Set", value="Kitchen")
     w = c1.number_input("Width (mm)", value=1000, min_value=1)
     h = c2.number_input("Height (mm)", value=350, min_value=1)
     q = c3.number_input("Quantity", value=6, min_value=1)
     
     c4.markdown("<br>", unsafe_allow_html=True) 
     if c4.button("➕ Add to List", use_container_width=True):
-        st.session_state.parts.append({"w": int(w), "h": int(h), "q": int(q)})
+        st.session_state.parts.append({"room": room, "w": int(w), "h": int(h), "q": int(q)})
         st.rerun()
 
 with col_upload:
@@ -127,6 +128,7 @@ with col_upload:
         try:
             df = pd.read_excel(uploaded_file)
             
+            room_col = next((c for c in df.columns if 'room' in str(c).lower() or 'set' in str(c).lower() or 'area' in str(c).lower()), None)
             w_col = next((c for c in df.columns if 'wid' in str(c).lower() or 'w' == str(c).lower()), None)
             h_col = next((c for c in df.columns if 'hei' in str(c).lower() or 'h' == str(c).lower()), None)
             q_col = next((c for c in df.columns if 'qty' in str(c).lower() or 'q' == str(c).lower() or 'quan' in str(c).lower()), None)
@@ -134,7 +136,9 @@ with col_upload:
             if w_col and h_col and q_col:
                 if st.button("Load Excel Data", type="primary"):
                     for index, row in df.iterrows():
+                        room_val = str(row[room_col]) if room_col else "Unassigned"
                         st.session_state.parts.append({
+                            "room": room_val,
                             "w": int(row[w_col]), 
                             "h": int(row[h_col]), 
                             "q": int(row[q_col])
@@ -158,7 +162,7 @@ if st.session_state.parts:
         total_order_sqm += row_total_sqm
         
         col_text, col_btn = st.columns([6, 1])
-        col_text.write(f"• **{p['q']} pcs** of {p['w']}x{p['h']}mm &nbsp;&nbsp;*( {sqm_per_pc:.2f} SQM/pc | Total: {row_total_sqm:.2f} SQM )*")
+        col_text.write(f"• **[{p.get('room', 'Unassigned')}]** — **{p['q']} pcs** of {p['w']}x{p['h']}mm &nbsp;&nbsp;*( {sqm_per_pc:.2f} SQM/pc | Total: {row_total_sqm:.2f} SQM )*")
         if col_btn.button("🗑️ Remove", key=f"del_{i}"):
             st.session_state.parts.pop(i)
             st.rerun()
@@ -180,8 +184,12 @@ if st.session_state.parts:
         mandatory_oversized = []
         target_id = 0
         
+        id_to_room = {} 
+        
         for p in st.session_state.parts:
             for _ in range(p['q']):
+                id_to_room[target_id] = p.get('room', 'Unassigned')
+                
                 if not piece_fits_slab({'w': p['w'], 'h': p['h']}, eff_w, eff_h):
                     best_frags = get_mandatory_fragments(p['w'], p['h'], eff_w, eff_h)
                     mandatory_oversized.append({
@@ -338,23 +346,30 @@ if st.session_state.parts:
                     rx, ry, rw, rh, rid = r[1], r[2], r[3], r[4], str(r[5])
                     act_w, act_h = rw - kerf, rh - kerf
                     
+                    parts = rid.split('_')
+                    t_id = int(parts[1])
+                    room_name = id_to_room.get(t_id, "Unassigned")
+                    
                     if rid.startswith('solid'):
-                        parts = rid.split('_')
                         target_w, target_h = parts[2], parts[3]
                         ax.add_patch(patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#2c3e50', facecolor='#85c1e9', lw=1.5))
-                        ax.text(rx + act_w/2, ry + act_h/2, f"SOLID\n{target_w}x{target_h}", color='black', weight='bold', ha='center', va='center', fontsize=8)
+                        
+                        if act_w > 120 and act_h > 120:
+                            ax.text(rx + act_w/2, ry + act_h/2, f"[{room_name}]\nSOLID\n{target_w}x{target_h}", color='black', weight='bold', ha='center', va='center', fontsize=6, clip_on=True)
                         
                     elif rid.startswith('mand'):
-                        parts = rid.split('_')
                         target_w, target_h = parts[2], parts[3]
                         ax.add_patch(patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#d35400', facecolor='#f5b041', lw=1.5, linestyle='--'))
-                        ax.text(rx + act_w/2, ry + act_h/2, f"MANDATORY\n{int(act_w)}x{int(act_h)}\n(For {target_w}x{target_h})", color='black', ha='center', va='center', fontsize=7)
+                        
+                        if act_w > 120 and act_h > 120:
+                            ax.text(rx + act_w/2, ry + act_h/2, f"[{room_name}]\nMANDATORY\n{int(act_w)}x{int(act_h)}\n(For {target_w}x{target_h})", color='black', ha='center', va='center', fontsize=5, clip_on=True)
                         
                     elif rid.startswith('rec'):
-                        parts = rid.split('_')
                         target_w, target_h = parts[2], parts[3]
                         ax.add_patch(patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#1e8449', facecolor='#82e0aa', lw=1.5, linestyle='--'))
-                        ax.text(rx + act_w/2, ry + act_h/2, f"FRAG\n{int(act_w)}x{int(act_h)}\n(For {target_w}x{target_h})", color='black', ha='center', va='center', fontsize=7)
+                        
+                        if act_w > 120 and act_h > 120:
+                            ax.text(rx + act_w/2, ry + act_h/2, f"[{room_name}]\nFRAG\n{int(act_w)}x{int(act_h)}\n(For {target_w}x{target_h})", color='black', ha='center', va='center', fontsize=5, clip_on=True)
                 
                 ax.set_xlim(0, sheet_w)
                 ax.set_ylim(0, sheet_h)
@@ -373,19 +388,21 @@ if st.session_state.parts:
                     fig2, ax2 = plt.subplots(figsize=(6, 2.5))
                     ax2.add_patch(patches.Rectangle((0,0), asm['w'], asm['h'], facecolor='#f9f9f9', edgecolor='black', lw=2))
                     
+                    room_name = id_to_room.get(asm['id'], "Unassigned")
                     joint_count = len(asm['frags']) - 1
                     edge_c = '#d35400' if asm['type'] == 'Mandatory Joint' else '#1e8449'
                     face_c = '#f5b041' if asm['type'] == 'Mandatory Joint' else '#82e0aa'
                     
                     for f in asm['frags']:
                         ax2.add_patch(patches.Rectangle((f['x'], f['y']), f['w'], f['h'], edgecolor=edge_c, linestyle='--', facecolor=face_c, alpha=0.6, lw=1.5))
-                        ax2.text(f['x'] + f['w']/2, f['y'] + f['h']/2, f"{int(f['w'])}x{int(f['h'])}", color='black', weight='bold', ha='center', va='center', fontsize=9)
+                        if f['w'] > 80 and f['h'] > 80:
+                            ax2.text(f['x'] + f['w']/2, f['y'] + f['h']/2, f"{int(f['w'])}x{int(f['h'])}", color='black', weight='bold', ha='center', va='center', fontsize=8, clip_on=True)
                     
                     ax2.set_xlim(0, asm['w'])
                     ax2.set_ylim(0, asm['h'])
                     ax2.set_aspect('equal')
                     ax2.axis('off')
-                    ax2.set_title(f"Assembled: {asm['w']}x{asm['h']}mm | {asm['type']} | {joint_count} Joints", fontsize=10)
+                    ax2.set_title(f"[{room_name}] Assembled: {asm['w']}x{asm['h']}mm | {asm['type']} | {joint_count} Joints", fontsize=10)
                     st.pyplot(fig2)
                     pdf.savefig(fig2, bbox_inches='tight')
                     plt.close(fig2)
