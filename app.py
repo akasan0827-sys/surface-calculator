@@ -10,7 +10,6 @@ from matplotlib.backends.backend_pdf import PdfPages
 # --- PAGE CONFIG & S&C ASIA BRANDING ---
 st.set_page_config(layout="wide", page_title="S&C Asia | Production Optimizer", page_icon="logo.png")
 
-# Makes the logo much larger in the sidebar
 try:
     st.sidebar.image("logo.png", use_container_width=True)
 except FileNotFoundError:
@@ -77,58 +76,74 @@ def can_pack(rects_to_pack, num_slabs, sheet_w, sheet_h, kerf):
     p.pack()
     return p, len(p.rect_list()) == len(rects_to_pack)
 
-# --- SMART LABELING WITH STRICT CLIPPING (UPDATED FOR SMALL SQUARES) ---
-def draw_smart_label(ax, room_name, piece_type, w_label, h_label, rx, ry, act_w, act_h, rect_patch):
+# --- SMART LABELING WITH STRICT CLIPPING AND TAG SYSTEM ---
+def draw_smart_label(ax, room_name, piece_type, w_label, h_label, rx, ry, act_w, act_h, rect_patch, tag=""):
     cx = rx + act_w / 2
     cy = ry + act_h / 2
     
-    # Safely handle empty rooms
     if pd.isna(room_name) or str(room_name).strip().lower() in ['nan', 'none', '']:
         room_name = "Unassigned"
         
     room_str = str(room_name).strip()
     is_wide = act_w >= act_h
 
-    # 1. LARGE PIECES -> Full 3-Line Text (Room, Type, Size)
-    if act_w >= 220 and act_h >= 150:
+    tag_text = f"#{tag}" if tag else ""
+
+    # 1. HIDE EXTREMELY TINY SPLINTERS
+    if act_w <= 12 or act_h <= 12:
+        return
+
+    # 2. OVERRIDE FOR TINY PIECES (e.g. 50x50, 60x60) -> Show ONLY the ID Tag
+    if act_w <= 80 and act_h <= 80:
+        if tag_text:
+            t = ax.text(cx, cy, tag_text, color='black', weight='bold', ha='center', va='center', fontsize=5, clip_on=True)
+            t.set_clip_path(rect_patch)
+        return
+
+    # 3. LARGE PIECES
+    if act_w >= 220 and act_h >= 120:
         text = f"[{room_str}]\n{piece_type}\n{w_label}x{h_label}" if piece_type else f"[{room_str}]\n{w_label}x{h_label}"
         rot = 0
         fs = 6
 
-    # 2. MEDIUM/SMALL SQUARES (e.g. 150x150, 100x100) -> 2-Line Text, Smaller Font
-    elif act_w >= 80 and act_h >= 80:
-        display_room = room_str[:6] + ".." if len(room_str) > 6 else room_str
-        text = f"[{display_room}]\n{w_label}x{h_label}"
-        rot = 0
-        fs = 4.5
-
-    # 3. HORIZONTAL STRIPS -> 2-Line Text if wide enough, otherwise just Size
+    # 4. HORIZONTAL STRIPS
     elif is_wide:
         display_room = room_str[:5] + ".." if len(room_str) > 5 else room_str
-        if act_h >= 55:
-            text = f"[{display_room}]\n{w_label}x{h_label}"
-            fs = 4
+        if act_h >= 50:
+            text = f"[{display_room}] {w_label}x{h_label}"
+            fs = 4.5
         elif act_h >= 25:
-            text = f"{w_label}x{h_label}"  # Exclude room if too thin to keep it clean
-            fs = 3.5
+            # Thin strip, check width
+            if act_w >= 100:
+                text = f"{w_label}x{h_label}"
+                fs = 4
+            else:
+                text = tag_text
+                fs = 4
         else:
-            text = "" # Box is too microscopically thin to write anything
+            text = tag_text
+            fs = 3.5
         rot = 0
 
-    # 4. VERTICAL STRIPS -> Rotated 90 Degrees
+    # 5. VERTICAL STRIPS
     else:
         display_room = room_str[:5] + ".." if len(room_str) > 5 else room_str
-        if act_w >= 55:
-            text = f"[{display_room}]\n{w_label}x{h_label}"
-            fs = 4
+        if act_w >= 50:
+            text = f"[{display_room}] {w_label}x{h_label}"
+            fs = 4.5
         elif act_w >= 25:
-            text = f"{w_label}x{h_label}"
-            fs = 3.5
+            # Thin vertical strip
+            if act_h >= 100:
+                text = f"{w_label}x{h_label}"
+                fs = 4
+            else:
+                text = tag_text
+                fs = 4
         else:
-            text = ""
+            text = tag_text
+            fs = 3.5
         rot = 90
-
-    # Draw the text and lock it purely inside the shape's rectangle patch
+        
     if text:
         t = ax.text(cx, cy, text, color='black', weight='bold', ha='center', va='center', fontsize=fs, rotation=rot, clip_on=True)
         t.set_clip_path(rect_patch)
@@ -182,7 +197,6 @@ with col_upload:
     if uploaded_file is not None:
         try:
             df = pd.read_excel(uploaded_file)
-            # Normalize column names for robust searching
             df.columns = [str(c).strip().lower() for c in df.columns]
             
             room_col = next((c for c in df.columns if any(k in c for k in ['room', 'set', 'area', 'location', 'tag'])), None)
@@ -195,7 +209,6 @@ with col_upload:
                     for index, row in df.iterrows():
                         room_val = str(row[room_col]) if room_col and pd.notna(row[room_col]) else "Unassigned"
                         
-                        # Robust casting: converts bad formats into NaN, allowing us to safely skip them
                         w_val = pd.to_numeric(row[w_col], errors='coerce')
                         h_val = pd.to_numeric(row[h_col], errors='coerce')
                         q_val = pd.to_numeric(row[q_col], errors='coerce')
@@ -429,13 +442,43 @@ if st.session_state.parts:
             pdf.savefig(fig_sum, bbox_inches='tight')
             plt.close(fig_sum)
 
-            # --- SLAB CUTTING MAPS ---
+            # --- SLAB CUTTING MAPS WITH SMART LEGEND ---
             st.subheader("Factory Floor: Cutting Map")
             for bin_idx in range(final_slabs):
-                fig, ax = plt.subplots(figsize=(10, 3))
+                # We create a layout with 2 rows: Top for the Slab Drawing, Bottom for the Legend/Remarks
+                fig, (ax, ax_leg) = plt.subplots(2, 1, figsize=(10, 4.5), gridspec_kw={'height_ratios': [3.5, 1]})
                 ax.add_patch(patches.Rectangle((0,0), sheet_w, sheet_h, facecolor='#e0e0e0', edgecolor='black', lw=2))
                 
                 bin_rects = [r for r in final_rects if r[0] == bin_idx]
+                
+                # Pre-process unique parts to assign short Tags (#1, #2, etc.)
+                unique_parts = {}
+                tag_counter = 1
+                
+                for r in bin_rects:
+                    rid = str(r[5])
+                    parts = rid.split('_')
+                    t_id = int(parts[1])
+                    room_name = id_to_room.get(t_id, "Unassigned")
+                    act_w, act_h = r[3] - kerf, r[4] - kerf
+                    
+                    if rid.startswith('solid'):
+                        p_type = "SOLID"
+                        target_w, target_h = parts[2], parts[3]
+                    elif rid.startswith('mand'):
+                        p_type = "MAND. FRAG"
+                        target_w, target_h = str(int(act_w)), str(int(act_h))
+                    elif rid.startswith('rec'):
+                        p_type = "FRAG"
+                        target_w, target_h = str(int(act_w)), str(int(act_h))
+                        
+                    key = (room_name, p_type, target_w, target_h)
+                    if key not in unique_parts:
+                        unique_parts[key] = {'tag': str(tag_counter), 'count': 0}
+                        tag_counter += 1
+                    unique_parts[key]['count'] += 1
+                
+                # Plot the rectangles and apply labels
                 for r in bin_rects:
                     rx, ry, rw, rh, rid = r[1], r[2], r[3], r[4], str(r[5])
                     act_w, act_h = rw - kerf, rh - kerf
@@ -446,27 +489,59 @@ if st.session_state.parts:
                     
                     if rid.startswith('solid'):
                         target_w, target_h = parts[2], parts[3]
+                        key = (room_name, "SOLID", target_w, target_h)
+                        tag = unique_parts[key]['tag']
+                        
                         patch = patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#2c3e50', facecolor='#85c1e9', lw=1.5)
                         ax.add_patch(patch)
-                        draw_smart_label(ax, room_name, "SOLID", target_w, target_h, rx, ry, act_w, act_h, patch)
+                        draw_smart_label(ax, room_name, "SOLID", target_w, target_h, rx, ry, act_w, act_h, patch, tag)
                         
                     elif rid.startswith('mand'):
-                        target_w, target_h = parts[2], parts[3]
+                        target_w, target_h = str(int(act_w)), str(int(act_h))
+                        key = (room_name, "MAND. FRAG", target_w, target_h)
+                        tag = unique_parts[key]['tag']
+                        
                         patch = patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#d35400', facecolor='#f5b041', lw=1.5, linestyle='--')
                         ax.add_patch(patch)
-                        draw_smart_label(ax, room_name, "MAND.", int(act_w), int(act_h), rx, ry, act_w, act_h, patch)
+                        draw_smart_label(ax, room_name, "MAND.", target_w, target_h, rx, ry, act_w, act_h, patch, tag)
                         
                     elif rid.startswith('rec'):
-                        target_w, target_h = parts[2], parts[3]
+                        target_w, target_h = str(int(act_w)), str(int(act_h))
+                        key = (room_name, "FRAG", target_w, target_h)
+                        tag = unique_parts[key]['tag']
+                        
                         patch = patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#1e8449', facecolor='#82e0aa', lw=1.5, linestyle='--')
                         ax.add_patch(patch)
-                        draw_smart_label(ax, room_name, "FRAG", int(act_w), int(act_h), rx, ry, act_w, act_h, patch)
+                        draw_smart_label(ax, room_name, "FRAG", target_w, target_h, rx, ry, act_w, act_h, patch, tag)
                 
                 ax.set_xlim(0, sheet_w)
                 ax.set_ylim(0, sheet_h)
                 ax.set_aspect('equal')
                 ax.axis('off')
                 ax.set_title(f"Slab {bin_idx + 1}", fontsize=11, weight='bold')
+                
+                # --- FORMAT AND RENDER THE LEGEND SECTION BELOW THE SLAB ---
+                ax_leg.axis('off')
+                
+                sorted_keys = sorted(unique_parts.keys(), key=lambda k: int(unique_parts[k]['tag']))
+                legend_lines = []
+                for k in sorted_keys:
+                    tag = unique_parts[k]['tag']
+                    count = unique_parts[k]['count']
+                    room, ptype, tw, th = k
+                    legend_lines.append(f"#{tag} - [{room}] {tw}x{th}mm ({ptype}) : {count} pcs")
+                    
+                # Distribute text into 3 clean columns
+                col_size = math.ceil(len(legend_lines) / 3) if len(legend_lines) > 0 else 1
+                cols = [legend_lines[i:i+col_size] for i in range(0, len(legend_lines), col_size)]
+                
+                ax_leg.text(0, 1.0, f"Remarks / Parts in Slab {bin_idx + 1}:", fontsize=9, weight='bold', va='top', ha='left')
+                
+                for c_idx, col_items in enumerate(cols):
+                    col_text = "\n".join(col_items)
+                    ax_leg.text(c_idx * 0.33, 0.75, col_text, fontsize=7, family='monospace', va='top', ha='left')
+
+                plt.tight_layout()
                 st.pyplot(fig)
                 pdf.savefig(fig, bbox_inches='tight')
                 plt.close(fig)
@@ -488,7 +563,7 @@ if st.session_state.parts:
                     for f in asm['frags']:
                         patch = patches.Rectangle((f['x'], f['y']), f['w'], f['h'], edgecolor=edge_c, linestyle='--', facecolor=face_c, alpha=0.6, lw=1.5)
                         ax2.add_patch(patch)
-                        draw_smart_label(ax2, room_name, "", int(f['w']), int(f['h']), f['x'], f['y'], f['w'], f['h'], patch)
+                        draw_smart_label(ax2, room_name, "", int(f['w']), int(f['h']), f['x'], f['y'], f['w'], f['h'], patch, tag="")
                     
                     ax2.set_xlim(0, asm['w'])
                     ax2.set_ylim(0, asm['h'])
