@@ -10,7 +10,6 @@ from matplotlib.backends.backend_pdf import PdfPages
 # --- PAGE CONFIG & S&C ASIA BRANDING ---
 st.set_page_config(layout="wide", page_title="S&C Asia | Production Optimizer", page_icon="logo.png")
 
-# Makes the logo much larger in the sidebar
 try:
     st.sidebar.image("logo.png", use_container_width=True)
 except FileNotFoundError:
@@ -48,20 +47,28 @@ def generate_fragments(w, h, strategy_ratios):
             res.append({"w": short_side, "h": f['l'], "x": 0, "y": f['offset']})
     return res
 
-def piece_fits_slab(f, eff_w, eff_h):
-    return (f['w'] <= eff_w and f['h'] <= eff_h) or (f['h'] <= eff_w and f['w'] <= eff_h)
+def piece_fits_slab(f, limit_w, limit_h):
+    return (f['w'] <= limit_w and f['h'] <= limit_h) or (f['h'] <= limit_w and f['w'] <= limit_h)
 
-def get_mandatory_fragments(w, h, eff_w, eff_h):
+def get_oriented_limits(w, h, limit_a, limit_b):
+    """Matches the longest side of the piece to the longest limit to minimize cuts."""
+    max_limit, min_limit = max(limit_a, limit_b), min(limit_a, limit_b)
+    if w >= h:
+        return max_limit, min_limit
+    else:
+        return min_limit, max_limit
+
+def get_mandatory_fragments(w, h, limit_w, limit_h):
     frags = []
     curr_x, curr_y = 0, 0
     rem_w, rem_h = w, h
 
     while rem_w > 0:
-        cut_w = min(rem_w, eff_w)
+        cut_w = min(rem_w, limit_w)
         rem_h = h
         curr_y = 0
         while rem_h > 0:
-            cut_h = min(rem_h, eff_h)
+            cut_h = min(rem_h, limit_h)
             frags.append({'w': cut_w, 'h': cut_h, 'x': curr_x, 'y': curr_y})
             curr_y += cut_h
             rem_h -= cut_h
@@ -160,12 +167,14 @@ st.sidebar.header("2. Optimization Rules")
 enable_site_limit = st.sidebar.checkbox(
     "Enable Elevator/Site Limit", 
     value=False, 
-    help="Force a cut if a piece exceeds a certain length (e.g., to fit in a service elevator)."
+    help="Force a cut if a piece exceeds a certain length or width (e.g., to fit in a service elevator)."
 )
 if enable_site_limit:
-    site_limit = st.sidebar.number_input("Max Allowable Length (mm)", value=2400)
+    site_limit_l = st.sidebar.number_input("Elevator Max Length (mm)", value=2400)
+    site_limit_w = st.sidebar.number_input("Elevator Max Width (mm)", value=1200)
 else:
-    site_limit = None
+    site_limit_l = None
+    site_limit_w = None
 
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 is_seamless = st.sidebar.checkbox(
@@ -284,21 +293,24 @@ if st.session_state.parts:
             for _ in range(p['q']):
                 id_to_room[target_id] = p.get('room', 'Unassigned')
                 
-                needs_site_split = enable_site_limit and (p['w'] > site_limit or p['h'] > site_limit)
+                needs_site_split = False
+                if enable_site_limit:
+                    if not piece_fits_slab({'w': p['w'], 'h': p['h']}, site_limit_l, site_limit_w):
+                        needs_site_split = True
                 
                 # Step 1: Manage Elevator/Site Limit Splits
                 if needs_site_split:
-                    # Cut piece down to fit site limit
-                    site_frags = get_mandatory_fragments(p['w'], p['h'], site_limit, site_limit)
+                    cw, ch = get_oriented_limits(p['w'], p['h'], site_limit_l, site_limit_w)
+                    site_frags = get_mandatory_fragments(p['w'], p['h'], cw, ch)
                     
                     final_frags = []
                     all_fit = True
-                    # Double check: do the elevator pieces actually fit the raw slab?
                     for sf in site_frags:
                         if not piece_fits_slab({'w': sf['w'], 'h': sf['h']}, eff_w, eff_h):
                             all_fit = False
-                            # They don't, so split them again for the factory slab limit
-                            sub_frags = get_mandatory_fragments(sf['w'], sf['h'], eff_w, eff_h)
+                            # It fits in the elevator, but not on the raw slab! Cut it again.
+                            scw, sch = get_oriented_limits(sf['w'], sf['h'], eff_w, eff_h)
+                            sub_frags = get_mandatory_fragments(sf['w'], sf['h'], scw, sch)
                             for sub_f in sub_frags:
                                 final_frags.append({
                                     'w': sub_f['w'],
@@ -314,10 +326,11 @@ if st.session_state.parts:
                         'id': target_id, 'w': p['w'], 'h': p['h'], 'frags': final_frags, 'type': type_label
                     })
                     
-                # Step 2: Normal Slab Limits (No site limits applied)
+                # Step 2: Normal Factory Slab Limits (No site limits triggered)
                 else:
                     if not piece_fits_slab({'w': p['w'], 'h': p['h']}, eff_w, eff_h):
-                        best_frags = get_mandatory_fragments(p['w'], p['h'], eff_w, eff_h)
+                        cw, ch = get_oriented_limits(p['w'], p['h'], eff_w, eff_h)
+                        best_frags = get_mandatory_fragments(p['w'], p['h'], cw, ch)
                         mandatory_oversized.append({
                             'id': target_id, 'w': p['w'], 'h': p['h'], 'frags': best_frags, 'type': 'Factory Joint'
                         })
