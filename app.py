@@ -10,6 +10,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 # --- PAGE CONFIG & S&C ASIA BRANDING ---
 st.set_page_config(layout="wide", page_title="S&C Asia | Production Optimizer", page_icon="logo.png")
 
+# Makes the logo much larger in the sidebar
 try:
     st.sidebar.image("logo.png", use_container_width=True)
 except FileNotFoundError:
@@ -113,7 +114,6 @@ def draw_smart_label(ax, room_name, piece_type, w_label, h_label, rx, ry, act_w,
             text = f"[{display_room}] {w_label}x{h_label}"
             fs = 4.5
         elif act_h >= 25:
-            # Thin strip, check width
             if act_w >= 100:
                 text = f"{w_label}x{h_label}"
                 fs = 4
@@ -132,7 +132,6 @@ def draw_smart_label(ax, room_name, piece_type, w_label, h_label, rx, ry, act_w,
             text = f"[{display_room}] {w_label}x{h_label}"
             fs = 4.5
         elif act_w >= 25:
-            # Thin vertical strip
             if act_h >= 100:
                 text = f"{w_label}x{h_label}"
                 fs = 4
@@ -157,6 +156,18 @@ kerf = st.sidebar.number_input("Blade Kerf (mm)", value=3)
 
 st.sidebar.markdown("---")
 st.sidebar.header("2. Optimization Rules")
+
+enable_site_limit = st.sidebar.checkbox(
+    "Enable Elevator/Site Limit", 
+    value=False, 
+    help="Force a cut if a piece exceeds a certain length (e.g., to fit in a service elevator)."
+)
+if enable_site_limit:
+    site_limit = st.sidebar.number_input("Max Allowable Length (mm)", value=2400)
+else:
+    site_limit = None
+
+st.sidebar.markdown("<br>", unsafe_allow_html=True)
 is_seamless = st.sidebar.checkbox(
     "Enable Optional Scrap Recycling", 
     value=True, 
@@ -166,7 +177,8 @@ is_seamless = st.sidebar.checkbox(
 st.sidebar.markdown("---")
 st.sidebar.markdown("### Visual Key")
 st.sidebar.markdown("🟦 **Blue:** Clean Solid Cut")
-st.sidebar.markdown("🟧 **Orange:** Mandatory Joint (Oversized)")
+st.sidebar.markdown("🟪 **Purple:** Site Joint (Elevator/Access Limit)")
+st.sidebar.markdown("🟧 **Orange:** Factory Joint (Oversized for Slab)")
 st.sidebar.markdown("🟩 **Green:** Optional Recycled Scrap")
 st.sidebar.markdown("⬜ **Gray:** Dead Waste")
 
@@ -272,13 +284,46 @@ if st.session_state.parts:
             for _ in range(p['q']):
                 id_to_room[target_id] = p.get('room', 'Unassigned')
                 
-                if not piece_fits_slab({'w': p['w'], 'h': p['h']}, eff_w, eff_h):
-                    best_frags = get_mandatory_fragments(p['w'], p['h'], eff_w, eff_h)
+                needs_site_split = enable_site_limit and (p['w'] > site_limit or p['h'] > site_limit)
+                
+                # Step 1: Manage Elevator/Site Limit Splits
+                if needs_site_split:
+                    # Cut piece down to fit site limit
+                    site_frags = get_mandatory_fragments(p['w'], p['h'], site_limit, site_limit)
+                    
+                    final_frags = []
+                    all_fit = True
+                    # Double check: do the elevator pieces actually fit the raw slab?
+                    for sf in site_frags:
+                        if not piece_fits_slab({'w': sf['w'], 'h': sf['h']}, eff_w, eff_h):
+                            all_fit = False
+                            # They don't, so split them again for the factory slab limit
+                            sub_frags = get_mandatory_fragments(sf['w'], sf['h'], eff_w, eff_h)
+                            for sub_f in sub_frags:
+                                final_frags.append({
+                                    'w': sub_f['w'],
+                                    'h': sub_f['h'],
+                                    'x': sf['x'] + sub_f['x'],
+                                    'y': sf['y'] + sub_f['y']
+                                })
+                        else:
+                            final_frags.append(sf)
+                    
+                    type_label = 'Site Joint' if all_fit else 'Site + Factory Joint'
                     mandatory_oversized.append({
-                        'id': target_id, 'w': p['w'], 'h': p['h'], 'frags': best_frags
+                        'id': target_id, 'w': p['w'], 'h': p['h'], 'frags': final_frags, 'type': type_label
                     })
+                    
+                # Step 2: Normal Slab Limits (No site limits applied)
                 else:
-                    standard_targets.append({'id': target_id, 'w': p['w'], 'h': p['h']})
+                    if not piece_fits_slab({'w': p['w'], 'h': p['h']}, eff_w, eff_h):
+                        best_frags = get_mandatory_fragments(p['w'], p['h'], eff_w, eff_h)
+                        mandatory_oversized.append({
+                            'id': target_id, 'w': p['w'], 'h': p['h'], 'frags': best_frags, 'type': 'Factory Joint'
+                        })
+                    else:
+                        standard_targets.append({'id': target_id, 'w': p['w'], 'h': p['h']})
+                
                 target_id += 1
                 
         final_slabs = 0
@@ -298,14 +343,15 @@ if st.session_state.parts:
                 for t in standard_targets:
                     base_rects_input.append({'w': t['w'], 'h': t['h'], 'rid': f"solid_{t['id']}_{t['w']}_{t['h']}"})
                 for mt in mandatory_oversized:
+                    prefix = 'site' if 'Site' in mt['type'] else 'mand'
                     for f_idx, f in enumerate(mt['frags']):
-                        base_rects_input.append({'w': f['w'], 'h': f['h'], 'rid': f"mand_{mt['id']}_{mt['w']}_{mt['h']}_{f_idx}"})
+                        base_rects_input.append({'w': f['w'], 'h': f['h'], 'rid': f"{prefix}_{mt['id']}_{mt['w']}_{mt['h']}_{f_idx}"})
                         
                 packer_base, is_base_success = can_pack(base_rects_input, test_slabs, sheet_w, sheet_h, kerf)
                 base_rects = packer_base.rect_list()
                 
                 packed_solid_ids = set([int(str(r[5]).split('_')[1]) for r in base_rects if str(r[5]).startswith('solid')])
-                packed_mand_rids = set([str(r[5]) for r in base_rects if str(r[5]).startswith('mand')])
+                packed_mand_rids = set([str(r[5]) for r in base_rects if str(r[5]).startswith('mand') or str(r[5]).startswith('site')])
                 expected_mand = sum(len(mt['frags']) for mt in mandatory_oversized)
                 
                 if len(packed_mand_rids) < expected_mand:
@@ -338,9 +384,12 @@ if st.session_state.parts:
                             for tid in packed_solid_ids:
                                 t = next(x for x in standard_targets if x['id'] == tid)
                                 test_layout.append({'w': t['w'], 'h': t['h'], 'rid': f"solid_{t['id']}_{t['w']}_{t['h']}"})
+                            
                             for mt in mandatory_oversized:
+                                prefix = 'site' if 'Site' in mt['type'] else 'mand'
                                 for f_idx, f in enumerate(mt['frags']):
-                                    test_layout.append({'w': f['w'], 'h': f['h'], 'rid': f"mand_{mt['id']}_{mt['w']}_{mt['h']}_{f_idx}"})
+                                    test_layout.append({'w': f['w'], 'h': f['h'], 'rid': f"{prefix}_{mt['id']}_{mt['w']}_{mt['h']}_{f_idx}"})
+                                    
                             for f_tuple in current_packed_recycled_frags:
                                 test_layout.append({'w': f_tuple['w'], 'h': f_tuple['h'], 'rid': f_tuple['rid']})
                             for f_idx, f in enumerate(frags):
@@ -379,7 +428,7 @@ if st.session_state.parts:
             seam_length = mt['h'] if mt['w'] >= mt['h'] else mt['w']
             joints_count = len(mt['frags']) - 1
             total_glue_length_mm += (joints_count * seam_length)
-            assembled_pieces_data.append({'id': mt['id'], 'w': mt['w'], 'h': mt['h'], 'frags': mt['frags'], 'type': 'Mandatory'})
+            assembled_pieces_data.append({'id': mt['id'], 'w': mt['w'], 'h': mt['h'], 'frags': mt['frags'], 'type': mt['type']})
 
         if final_recycled_count > 0:
             for t in missing_standard:
@@ -404,7 +453,7 @@ if st.session_state.parts:
         col_m3.metric("🔥 True Material Yield", f"{yield_percentage:.1f}%")
         col_m4.metric("💧 Est. Glue Required", f"{total_glue_length_cm:.1f} CM")
         
-        st.success(f"📋 **Mixed Batch Output:** {final_solid_count} pieces clean-cut. {len(mandatory_oversized)} mandatory joints applied. {final_recycled_count} pieces optionally recycled.")
+        st.success(f"📋 **Mixed Batch Output:** {final_solid_count} pieces clean-cut. {len(mandatory_oversized)} joints generated (Site or Factory). {final_recycled_count} pieces optionally recycled.")
 
         # Excel Export
         output_excel = io.BytesIO()
@@ -420,6 +469,9 @@ if st.session_state.parts:
             fig_sum, ax_sum = plt.subplots(figsize=(8, 6))
             ax_sum.axis('off')
             
+            site_joints_count = len([m for m in mandatory_oversized if 'Site' in m['type']])
+            fact_joints_count = len([m for m in mandatory_oversized if m['type'] == 'Factory Joint'])
+            
             summary_header = "S&C ASIA | PRODUCTION & MATERIAL EFFICIENCY REPORT"
             summary_content = (
                 f"====================================================\n"
@@ -433,7 +485,8 @@ if st.session_state.parts:
                 f" BATCH COMPOSITION BREAKDOWN\n"
                 f"----------------------------------------------------\n"
                 f" • Solid Clean-Cut Pieces    : {final_solid_count}\n"
-                f" • Mandatory Jointed Pieces  : {len(mandatory_oversized)}\n"
+                f" • Factory Jointed Pieces    : {fact_joints_count}\n"
+                f" • Site Jointed Pieces       : {site_joints_count}\n"
                 f" • Optionally Recycled Pieces: {final_recycled_count}\n"
             )
             ax_sum.text(0.05, 0.85, summary_header, fontsize=12, weight='bold', color='#1f4e78', va='top')
@@ -445,7 +498,6 @@ if st.session_state.parts:
             # --- SLAB CUTTING MAPS WITH SMART LEGEND ---
             st.subheader("Factory Floor: Cutting Map")
             for bin_idx in range(final_slabs):
-                # We create a layout with 2 rows: Top for the Slab Drawing, Bottom for the Legend/Remarks
                 fig, (ax, ax_leg) = plt.subplots(2, 1, figsize=(10, 4.5), gridspec_kw={'height_ratios': [3.5, 1]})
                 ax.add_patch(patches.Rectangle((0,0), sheet_w, sheet_h, facecolor='#e0e0e0', edgecolor='black', lw=2))
                 
@@ -465,8 +517,11 @@ if st.session_state.parts:
                     if rid.startswith('solid'):
                         p_type = "SOLID"
                         target_w, target_h = parts[2], parts[3]
+                    elif rid.startswith('site'):
+                        p_type = "SITE JOINT"
+                        target_w, target_h = str(int(act_w)), str(int(act_h))
                     elif rid.startswith('mand'):
-                        p_type = "MAND. FRAG"
+                        p_type = "FACTORY JOINT"
                         target_w, target_h = str(int(act_w)), str(int(act_h))
                     elif rid.startswith('rec'):
                         p_type = "FRAG"
@@ -496,14 +551,23 @@ if st.session_state.parts:
                         ax.add_patch(patch)
                         draw_smart_label(ax, room_name, "SOLID", target_w, target_h, rx, ry, act_w, act_h, patch, tag)
                         
+                    elif rid.startswith('site'):
+                        target_w, target_h = str(int(act_w)), str(int(act_h))
+                        key = (room_name, "SITE JOINT", target_w, target_h)
+                        tag = unique_parts[key]['tag']
+                        
+                        patch = patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#5b2c6f', facecolor='#d7bde2', lw=1.5, linestyle='--')
+                        ax.add_patch(patch)
+                        draw_smart_label(ax, room_name, "SITE", target_w, target_h, rx, ry, act_w, act_h, patch, tag)
+
                     elif rid.startswith('mand'):
                         target_w, target_h = str(int(act_w)), str(int(act_h))
-                        key = (room_name, "MAND. FRAG", target_w, target_h)
+                        key = (room_name, "FACTORY JOINT", target_w, target_h)
                         tag = unique_parts[key]['tag']
                         
                         patch = patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#d35400', facecolor='#f5b041', lw=1.5, linestyle='--')
                         ax.add_patch(patch)
-                        draw_smart_label(ax, room_name, "MAND.", target_w, target_h, rx, ry, act_w, act_h, patch, tag)
+                        draw_smart_label(ax, room_name, "FACTORY", target_w, target_h, rx, ry, act_w, act_h, patch, tag)
                         
                     elif rid.startswith('rec'):
                         target_w, target_h = str(int(act_w)), str(int(act_h))
@@ -557,8 +621,16 @@ if st.session_state.parts:
                     
                     room_name = id_to_room.get(asm['id'], "Unassigned")
                     joint_count = len(asm['frags']) - 1
-                    edge_c = '#d35400' if asm['type'] == 'Mandatory' else '#1e8449'
-                    face_c = '#f5b041' if asm['type'] == 'Mandatory' else '#82e0aa'
+                    
+                    if 'Site' in asm['type']:
+                        edge_c = '#5b2c6f'
+                        face_c = '#d7bde2'
+                    elif 'Factory' in asm['type'] or 'Mandatory' in asm['type']:
+                        edge_c = '#d35400'
+                        face_c = '#f5b041'
+                    else:
+                        edge_c = '#1e8449'
+                        face_c = '#82e0aa'
                     
                     for f in asm['frags']:
                         patch = patches.Rectangle((f['x'], f['y']), f['w'], f['h'], edgecolor=edge_c, linestyle='--', facecolor=face_c, alpha=0.6, lw=1.5)
