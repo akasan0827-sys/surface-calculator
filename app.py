@@ -10,8 +10,9 @@ from matplotlib.backends.backend_pdf import PdfPages
 # --- PAGE CONFIG & S&C ASIA BRANDING ---
 st.set_page_config(layout="wide", page_title="S&C Asia | Production Optimizer", page_icon="logo.png")
 
+# Makes the logo much larger in the sidebar
 try:
-    st.logo("logo.png")
+    st.sidebar.image("logo.png", use_container_width=True)
 except FileNotFoundError:
     pass 
 
@@ -81,35 +82,42 @@ def draw_smart_label(ax, room_name, piece_type, w_label, h_label, rx, ry, act_w,
     cx = rx + act_w / 2
     cy = ry + act_h / 2
     
-    # Failsafe: if Excel passes an empty cell, name it Unassigned instead of "nan"
+    # 1. Handle missing room names safely
     if pd.isna(room_name) or str(room_name).strip().lower() in ['nan', 'none', '']:
         room_name = "Unassigned"
         
+    # 2. Prevent long room names from breaking small boxes (like 150x150 cuts)
+    if act_w < 180 and act_h < 180 and len(str(room_name)) > 7:
+        display_room = str(room_name)[:6] + ".."
+    else:
+        display_room = str(room_name)
+        
     is_wide = act_w >= act_h
 
-    # STRATEGY: NEVER DROP THE ROOM NAME
-    # 1. Big pieces -> Multiline text
+    # 3. Dynamic Font and Format Logic
     if act_w >= 180 and act_h >= 120:
-        text = f"[{room_name}]\n{piece_type}\n{w_label}x{h_label}" if piece_type else f"[{room_name}]\n{w_label}x{h_label}"
+        # Large piece
+        text = f"[{display_room}]\n{piece_type}\n{w_label}x{h_label}" if piece_type else f"[{display_room}]\n{w_label}x{h_label}"
         rot = 0
         fs = 6
-        
-    # 2. Horizontal strips -> Single line horizontal text
+    elif act_w < 160 and act_h < 120:
+        # Very small pieces (e.g. 150x150 minus kerf)
+        text = f"[{display_room}]\n{w_label}x{h_label}"
+        rot = 0 if is_wide else 90
+        fs = 4 # Shrink font for tight fits
     elif is_wide:
-        text = f"[{room_name}] {w_label}x{h_label}"
+        # Horizontal strip
+        text = f"[{display_room}] {w_label}x{h_label}"
         rot = 0
         fs = 5
-        
-    # 3. Vertical strips -> Single line rotated 90 degrees
     else:
-        text = f"[{room_name}] {w_label}x{h_label}"
+        # Vertical strip
+        text = f"[{display_room}] {w_label}x{h_label}"
         rot = 90
         fs = 5
 
-    # Draw the text
-    t = ax.text(cx, cy, text, color='black', weight='bold', ha='center', va='center', fontsize=fs, rotation=rot)
-    
-    # THE FIX: Mathematically restrict the text so it can NEVER overlap outside its own piece boundary
+    # 4. Strict Matplotlib Clipping (clip_on=True physically traps text inside the color block)
+    t = ax.text(cx, cy, text, color='black', weight='bold', ha='center', va='center', fontsize=fs, rotation=rot, clip_on=True)
     t.set_clip_path(rect_patch)
 
 
@@ -161,25 +169,41 @@ with col_upload:
     if uploaded_file is not None:
         try:
             df = pd.read_excel(uploaded_file)
+            # Normalize column names for robust searching
+            df.columns = [str(c).strip().lower() for c in df.columns]
             
-            room_col = next((c for c in df.columns if 'room' in str(c).lower() or 'set' in str(c).lower() or 'area' in str(c).lower()), None)
-            w_col = next((c for c in df.columns if 'wid' in str(c).lower() or 'w' == str(c).lower()), None)
-            h_col = next((c for c in df.columns if 'hei' in str(c).lower() or 'h' == str(c).lower()), None)
-            q_col = next((c for c in df.columns if 'qty' in str(c).lower() or 'q' == str(c).lower() or 'quan' in str(c).lower()), None)
+            room_col = next((c for c in df.columns if any(k in c for k in ['room', 'set', 'area', 'location', 'tag'])), None)
+            w_col = next((c for c in df.columns if any(k in c for k in ['width', 'wid', 'w', 'length', 'len'])), None)
+            h_col = next((c for c in df.columns if any(k in c for k in ['height', 'hei', 'h', 'depth', 'dep'])), None)
+            q_col = next((c for c in df.columns if any(k in c for k in ['qty', 'quantity', 'q', 'pcs', 'count', 'amount'])), None)
             
             if w_col and h_col and q_col:
                 if st.button("Load Excel Data", type="primary"):
+                    # Optionally clear the list before loading new excel file
+                    # st.session_state.parts = [] 
                     for index, row in df.iterrows():
-                        room_val = str(row[room_col]) if room_col else "Unassigned"
-                        st.session_state.parts.append({
-                            "room": room_val,
-                            "w": int(row[w_col]), 
-                            "h": int(row[h_col]), 
-                            "q": int(row[q_col])
-                        })
+                        room_val = str(row[room_col]) if room_col and pd.notna(row[room_col]) else "Unassigned"
+                        
+                        # Robust casting: converts bad formats into NaN, allowing us to safely skip them
+                        w_val = pd.to_numeric(row[w_col], errors='coerce')
+                        h_val = pd.to_numeric(row[h_col], errors='coerce')
+                        q_val = pd.to_numeric(row[q_col], errors='coerce')
+                        
+                        if pd.isna(w_val) or pd.isna(h_val) or pd.isna(q_val):
+                            continue
+                            
+                        w_val, h_val, q_val = int(w_val), int(h_val), int(q_val)
+                        if w_val > 0 and h_val > 0 and q_val > 0:
+                            st.session_state.parts.append({
+                                "room": room_val,
+                                "w": w_val, 
+                                "h": h_val, 
+                                "q": q_val
+                            })
+                    st.success("Successfully loaded valid rows from Excel cut list!")
                     st.rerun()
             else:
-                st.error("⚠️ Ensure your Excel file has columns named 'Width', 'Height', and 'Qty'.")
+                st.error("⚠️ Ensure your Excel file has columns representing Width, Height, and Qty.")
         except Exception as e:
             st.error(f"Error reading file: {e}")
 
@@ -364,11 +388,38 @@ if st.session_state.parts:
             pd.DataFrame(st.session_state.parts).to_excel(writer, index=False, sheet_name='CutList')
         st.download_button("📥 Export Cut List to Excel", data=output_excel.getvalue(), file_name="S&C_Asia_Cut_List.xlsx", mime="application/vnd.ms-excel")
 
-        # Visuals
+        # Visuals & PDF Generation
         pdf_buffer = io.BytesIO()
         with PdfPages(pdf_buffer) as pdf:
-            st.subheader("Factory Floor: Cutting Map")
             
+            # --- PAGE 1: PRODUCTION & EFFICIENCY REPORT SUMMARY ---
+            fig_sum, ax_sum = plt.subplots(figsize=(8, 6))
+            ax_sum.axis('off')
+            
+            summary_header = "S&C ASIA | PRODUCTION & MATERIAL EFFICIENCY REPORT"
+            summary_content = (
+                f"====================================================\n"
+                f" PROJECT METRICS SUMMARY\n"
+                f"====================================================\n\n"
+                f" • Total Slabs Pulled        : {final_slabs} Slabs\n"
+                f" • Total Target Area         : {total_project_sqm:.2f} SQM\n"
+                f" • True Material Yield       : {yield_percentage:.1f}%\n"
+                f" • Estimated Glue Required   : {total_glue_length_cm:.1f} CM\n\n"
+                f"----------------------------------------------------\n"
+                f" BATCH COMPOSITION BREAKDOWN\n"
+                f"----------------------------------------------------\n"
+                f" • Solid Clean-Cut Pieces    : {final_solid_count}\n"
+                f" • Mandatory Jointed Pieces  : {len(mandatory_oversized)}\n"
+                f" • Optionally Recycled Pieces: {final_recycled_count}\n"
+            )
+            ax_sum.text(0.05, 0.85, summary_header, fontsize=12, weight='bold', color='#1f4e78', va='top')
+            ax_sum.text(0.05, 0.70, summary_content, fontsize=10, family='monospace', va='top')
+            
+            pdf.savefig(fig_sum, bbox_inches='tight')
+            plt.close(fig_sum)
+
+            # --- SLAB CUTTING MAPS ---
+            st.subheader("Factory Floor: Cutting Map")
             for bin_idx in range(final_slabs):
                 fig, ax = plt.subplots(figsize=(10, 3))
                 ax.add_patch(patches.Rectangle((0,0), sheet_w, sheet_h, facecolor='#e0e0e0', edgecolor='black', lw=2))
@@ -409,6 +460,7 @@ if st.session_state.parts:
                 pdf.savefig(fig, bbox_inches='tight')
                 plt.close(fig)
 
+            # --- ASSEMBLY MAPS ---
             if assembled_pieces_data:
                 st.markdown("---")
                 st.subheader("🧩 Glue Jointing Assembly Maps")
@@ -425,7 +477,6 @@ if st.session_state.parts:
                     for f in asm['frags']:
                         patch = patches.Rectangle((f['x'], f['y']), f['w'], f['h'], edgecolor=edge_c, linestyle='--', facecolor=face_c, alpha=0.6, lw=1.5)
                         ax2.add_patch(patch)
-                        # Empty string for piece type keeps the assembly diagram clean
                         draw_smart_label(ax2, room_name, "", int(f['w']), int(f['h']), f['x'], f['y'], f['w'], f['h'], patch)
                     
                     ax2.set_xlim(0, asm['w'])
