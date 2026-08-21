@@ -77,48 +77,61 @@ def can_pack(rects_to_pack, num_slabs, sheet_w, sheet_h, kerf):
     p.pack()
     return p, len(p.rect_list()) == len(rects_to_pack)
 
-# --- SMART LABELING WITH STRICT CLIPPING ---
+# --- SMART LABELING WITH STRICT CLIPPING (UPDATED FOR SMALL SQUARES) ---
 def draw_smart_label(ax, room_name, piece_type, w_label, h_label, rx, ry, act_w, act_h, rect_patch):
     cx = rx + act_w / 2
     cy = ry + act_h / 2
     
-    # 1. Handle missing room names safely
+    # Safely handle empty rooms
     if pd.isna(room_name) or str(room_name).strip().lower() in ['nan', 'none', '']:
         room_name = "Unassigned"
         
-    # 2. Prevent long room names from breaking small boxes (like 150x150 cuts)
-    if act_w < 180 and act_h < 180 and len(str(room_name)) > 7:
-        display_room = str(room_name)[:6] + ".."
-    else:
-        display_room = str(room_name)
-        
+    room_str = str(room_name).strip()
     is_wide = act_w >= act_h
 
-    # 3. Dynamic Font and Format Logic
-    if act_w >= 180 and act_h >= 120:
-        # Large piece
-        text = f"[{display_room}]\n{piece_type}\n{w_label}x{h_label}" if piece_type else f"[{display_room}]\n{w_label}x{h_label}"
+    # 1. LARGE PIECES -> Full 3-Line Text (Room, Type, Size)
+    if act_w >= 220 and act_h >= 150:
+        text = f"[{room_str}]\n{piece_type}\n{w_label}x{h_label}" if piece_type else f"[{room_str}]\n{w_label}x{h_label}"
         rot = 0
         fs = 6
-    elif act_w < 160 and act_h < 120:
-        # Very small pieces (e.g. 150x150 minus kerf)
-        text = f"[{display_room}]\n{w_label}x{h_label}"
-        rot = 0 if is_wide else 90
-        fs = 4 # Shrink font for tight fits
-    elif is_wide:
-        # Horizontal strip
-        text = f"[{display_room}] {w_label}x{h_label}"
-        rot = 0
-        fs = 5
-    else:
-        # Vertical strip
-        text = f"[{display_room}] {w_label}x{h_label}"
-        rot = 90
-        fs = 5
 
-    # 4. Strict Matplotlib Clipping (clip_on=True physically traps text inside the color block)
-    t = ax.text(cx, cy, text, color='black', weight='bold', ha='center', va='center', fontsize=fs, rotation=rot, clip_on=True)
-    t.set_clip_path(rect_patch)
+    # 2. MEDIUM/SMALL SQUARES (e.g. 150x150, 100x100) -> 2-Line Text, Smaller Font
+    elif act_w >= 80 and act_h >= 80:
+        display_room = room_str[:6] + ".." if len(room_str) > 6 else room_str
+        text = f"[{display_room}]\n{w_label}x{h_label}"
+        rot = 0
+        fs = 4.5
+
+    # 3. HORIZONTAL STRIPS -> 2-Line Text if wide enough, otherwise just Size
+    elif is_wide:
+        display_room = room_str[:5] + ".." if len(room_str) > 5 else room_str
+        if act_h >= 55:
+            text = f"[{display_room}]\n{w_label}x{h_label}"
+            fs = 4
+        elif act_h >= 25:
+            text = f"{w_label}x{h_label}"  # Exclude room if too thin to keep it clean
+            fs = 3.5
+        else:
+            text = "" # Box is too microscopically thin to write anything
+        rot = 0
+
+    # 4. VERTICAL STRIPS -> Rotated 90 Degrees
+    else:
+        display_room = room_str[:5] + ".." if len(room_str) > 5 else room_str
+        if act_w >= 55:
+            text = f"[{display_room}]\n{w_label}x{h_label}"
+            fs = 4
+        elif act_w >= 25:
+            text = f"{w_label}x{h_label}"
+            fs = 3.5
+        else:
+            text = ""
+        rot = 90
+
+    # Draw the text and lock it purely inside the shape's rectangle patch
+    if text:
+        t = ax.text(cx, cy, text, color='black', weight='bold', ha='center', va='center', fontsize=fs, rotation=rot, clip_on=True)
+        t.set_clip_path(rect_patch)
 
 
 # --- SIDEBAR SETTINGS ---
@@ -179,8 +192,6 @@ with col_upload:
             
             if w_col and h_col and q_col:
                 if st.button("Load Excel Data", type="primary"):
-                    # Optionally clear the list before loading new excel file
-                    # st.session_state.parts = [] 
                     for index, row in df.iterrows():
                         room_val = str(row[room_col]) if room_col and pd.notna(row[room_col]) else "Unassigned"
                         
