@@ -48,13 +48,11 @@ def generate_fragments(w, h, strategy_ratios):
     return res
 
 def piece_fits_slab(f, limit_w, limit_h, strict_grain=False):
-    """If strict_grain is True, no rotation is allowed to preserve veins."""
     if strict_grain:
         return f['w'] <= limit_w and f['h'] <= limit_h
     return (f['w'] <= limit_w and f['h'] <= limit_h) or (f['h'] <= limit_w and f['w'] <= limit_h)
 
 def get_oriented_limits(w, h, limit_a, limit_b, strict_grain=False):
-    """Matches the longest side of the piece to the longest limit, UNLESS strict grain is locked."""
     if strict_grain:
         return limit_a, limit_b
         
@@ -83,7 +81,6 @@ def get_mandatory_fragments(w, h, limit_w, limit_h):
     return frags
 
 def can_pack(rects_to_pack, num_slabs, sheet_w, sheet_h, kerf, strict_grain=False):
-    # If strict grain is True, tell rectpack NOT to rotate pieces
     p = newPacker(rotation=not strict_grain)
     p.add_bin(sheet_w, sheet_h, count=num_slabs)
     for r in rects_to_pack:
@@ -94,7 +91,6 @@ def can_pack(rects_to_pack, num_slabs, sheet_w, sheet_h, kerf, strict_grain=Fals
 
 # --- MULTI-COLOR SMART LABELING (RED ROOM NUMBERS) ---
 def draw_multiline_text(ax, cx, cy, lines, colors, fs, rot, rect_patch, act_w, act_h):
-    """Draws multiple lines of text with distinct colors (e.g. Red for Rooms) safely inside the piece."""
     line_height_ratio = 0.25 
     num_lines = len(lines)
     
@@ -121,11 +117,9 @@ def draw_smart_label(ax, room_name, part_type, w_label, h_label, rx, ry, act_w, 
     is_wide = act_w >= act_h
     tag_text = f"#{tag}" if tag else ""
 
-    # 1. HIDE EXTREMELY TINY SPLINTERS
     if act_w <= 12 or act_h <= 12:
         return
 
-    # 2. OVERRIDE FOR TINY PIECES (Show ONLY the ID Tag)
     if act_w <= 80 and act_h <= 80:
         if tag_text:
             t = ax.text(cx, cy, tag_text, color='black', weight='bold', ha='center', va='center', fontsize=5, clip_on=True)
@@ -135,14 +129,11 @@ def draw_smart_label(ax, room_name, part_type, w_label, h_label, rx, ry, act_w, 
     lines, colors = [], []
     fs, rot = 4, 0
 
-    # 3. LARGE PIECES
     if act_w >= 220 and act_h >= 120:
         lines = [f"[{room_str}]", f"{part_type}", f"{w_label}x{h_label}"]
-        colors = ['#cc0000', 'black', 'black'] # RED Room, Black Details
+        colors = ['#cc0000', 'black', 'black']
         rot = 0
         fs = 6
-
-    # 4. HORIZONTAL STRIPS
     elif is_wide:
         display_room = room_str[:5] + ".." if len(room_str) > 5 else room_str
         if act_h >= 50:
@@ -163,8 +154,6 @@ def draw_smart_label(ax, room_name, part_type, w_label, h_label, rx, ry, act_w, 
             colors = ['black']
             fs = 3.5
         rot = 0
-
-    # 5. VERTICAL STRIPS
     else:
         display_room = room_str[:5] + ".." if len(room_str) > 5 else room_str
         if act_w >= 50:
@@ -244,18 +233,41 @@ project_name = st.text_input("Master Project Name", value="Amari Hotel Project",
 tab_manual, tab_excel = st.tabs(["🛠️ Manual Input (Organized)", "📥 Excel Import"])
 
 with tab_manual:
-    st.markdown("Select part category to keep lists organized without long typing.")
-    c_room, c_type, c1, c2, c3, c4 = st.columns([2, 1.5, 1.5, 1.5, 1.5, 2])
+    st.markdown("Batch-add parts to multiple rooms instantly. *(e.g., Create 15 identical 'Tops' for Rooms 101 through 115)*.")
     
-    room = c_room.text_input("Room/Unit #", value="101")
+    # Row 1: Room Config
+    c_pref, c_start, c_units = st.columns([2, 1.5, 1.5])
+    room_prefix = c_pref.text_input("Room Name / Prefix", value="", placeholder="e.g., 'Unit ', 'Lobby'")
+    enable_auto_num = c_start.checkbox("Auto-Number Rooms", value=True, help="Adds sequential numbers (101, 102) to the prefix.")
+    start_num = c_start.number_input("Starting Number", value=101, step=1, disabled=not enable_auto_num)
+    num_units = c_units.number_input("Total Rooms to Add", value=15, min_value=1, max_value=1000)
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # Row 2: Part Config
+    c_type, c1, c2, c3, c4 = st.columns([1.5, 1.5, 1.5, 1.5, 2])
     part_type = c_type.selectbox("Part Category", ["Top", "Apron", "Splash", "Skirting", "Other"])
-    w = c1.number_input("Width (mm)", value=1000, min_value=1)
-    h = c2.number_input("Height (mm)", value=350, min_value=1)
-    q = c3.number_input("Qty", value=6, min_value=1)
+    w = c1.number_input("Width (mm)", value=1600, min_value=1)
+    h = c2.number_input("Height (mm)", value=600, min_value=1)
+    q_per_unit = c3.number_input("Qty per Room", value=1, min_value=1)
     
     c4.markdown("<br>", unsafe_allow_html=True) 
-    if c4.button("➕ Add to List", use_container_width=True):
-        st.session_state.parts.append({"room": room, "type": part_type, "w": int(w), "h": int(h), "q": int(q)})
+    if c4.button("➕ Batch Add to List", use_container_width=True):
+        for i in range(int(num_units)):
+            # Determine room string based on auto-numbering toggle
+            if enable_auto_num:
+                current_room_num = int(start_num) + i
+                room_str = f"{room_prefix}{current_room_num}" if room_prefix else str(current_room_num)
+            else:
+                room_str = room_prefix if room_prefix else "Unassigned"
+                
+            st.session_state.parts.append({
+                "room": room_str,
+                "type": part_type,
+                "w": int(w), 
+                "h": int(h), 
+                "q": int(q_per_unit)
+            })
         st.rerun()
 
 with tab_excel:
@@ -314,7 +326,6 @@ if st.session_state.parts:
         total_order_sqm += row_total_sqm
         
         col_text, col_btn = st.columns([6, 1])
-        # Displaying the structured data
         col_text.write(f"• **[{p.get('room', 'Unassigned')}] {p.get('type', 'Part')}** — **{p['q']} pcs** of {p['w']}x{p['h']}mm &nbsp;&nbsp;*( {sqm_per_pc:.2f} SQM/pc | Total: {row_total_sqm:.2f} SQM )*")
         if col_btn.button("🗑️ Remove", key=f"del_{i}"):
             st.session_state.parts.pop(i)
@@ -350,7 +361,6 @@ if st.session_state.parts:
                     if not piece_fits_slab({'w': p['w'], 'h': p['h']}, site_limit_l, site_limit_w, strict_grain):
                         needs_site_split = True
                 
-                # Step 1: Manage Elevator/Site Limit Splits
                 if needs_site_split:
                     cw, ch = get_oriented_limits(p['w'], p['h'], site_limit_l, site_limit_w, strict_grain)
                     site_frags = get_mandatory_fragments(p['w'], p['h'], cw, ch)
@@ -377,7 +387,6 @@ if st.session_state.parts:
                         'id': target_id, 'w': p['w'], 'h': p['h'], 'frags': final_frags, 'type': type_label
                     })
                     
-                # Step 2: Normal Factory Slab Limits (No site limits triggered)
                 else:
                     if not piece_fits_slab({'w': p['w'], 'h': p['h']}, eff_w, eff_h, strict_grain):
                         cw, ch = get_oriented_limits(p['w'], p['h'], eff_w, eff_h, strict_grain)
@@ -536,7 +545,6 @@ if st.session_state.parts:
             site_joints_count = len([m for m in mandatory_oversized if 'Site' in m['type']])
             fact_joints_count = len([m for m in mandatory_oversized if m['type'] == 'Factory Joint'])
             
-            # Print Project header on first page
             fig_sum.suptitle(f"PROJECT: {project_name.upper()}", fontsize=14, weight='bold', color='#cc0000', y=0.95)
             
             summary_header = "S&C ASIA | PRODUCTION & MATERIAL EFFICIENCY REPORT"
@@ -560,7 +568,6 @@ if st.session_state.parts:
             ax_sum.text(0.05, 0.85, summary_header, fontsize=12, weight='bold', color='#1f4e78', va='top')
             ax_sum.text(0.05, 0.70, summary_content, fontsize=10, family='monospace', va='top')
             
-            # Footer Page Number
             fig_sum.text(0.95, 0.05, f"Page {pdf.get_pagecount() + 1}", ha='right', fontsize=9)
             
             pdf.savefig(fig_sum, bbox_inches='tight')
@@ -576,7 +583,6 @@ if st.session_state.parts:
                 
                 bin_rects = [r for r in final_rects if r[0] == bin_idx]
                 
-                # Pre-process unique parts to assign short Tags (#1, #2, etc.)
                 unique_parts = {}
                 tag_counter = 1
                 
@@ -607,7 +613,6 @@ if st.session_state.parts:
                         tag_counter += 1
                     unique_parts[key]['count'] += 1
                 
-                # Plot the rectangles and apply labels
                 for r in bin_rects:
                     rx, ry, rw, rh, rid = r[1], r[2], r[3], r[4], str(r[5])
                     act_w, act_h = rw - kerf, rh - kerf
@@ -658,7 +663,6 @@ if st.session_state.parts:
                 ax.set_aspect('equal')
                 ax.axis('off')
                 
-                # --- FORMAT AND RENDER THE LEGEND SECTION BELOW THE SLAB ---
                 ax_leg.axis('off')
                 
                 sorted_keys = sorted(unique_parts.keys(), key=lambda k: int(unique_parts[k]['tag']))
@@ -667,7 +671,7 @@ if st.session_state.parts:
                     tag = unique_parts[k]['tag']
                     count = unique_parts[k]['count']
                     room, ptype, tw, th = k
-                    legend_lines.append(f"#{tag} - [Room {room}] {tw}x{th}mm ({ptype}) : {count} pcs")
+                    legend_lines.append(f"#{tag} - [{room}] {tw}x{th}mm ({ptype}) : {count} pcs")
                     
                 col_size = math.ceil(len(legend_lines) / 3) if len(legend_lines) > 0 else 1
                 cols = [legend_lines[i:i+col_size] for i in range(0, len(legend_lines), col_size)]
@@ -678,9 +682,8 @@ if st.session_state.parts:
                     col_text = "\n".join(col_items)
                     ax_leg.text(c_idx * 0.33, 0.75, col_text, fontsize=7, family='monospace', va='top', ha='left')
 
-                # Footer Page Number
                 fig.text(0.95, 0.05, f"Page {pdf.get_pagecount() + 1}", ha='right', fontsize=9)
-                plt.tight_layout(rect=[0, 0.05, 1, 0.95]) # Adjust layout to not hide title
+                plt.tight_layout(rect=[0, 0.05, 1, 0.95]) 
                 st.pyplot(fig)
                 pdf.savefig(fig, bbox_inches='tight')
                 plt.close(fig)
@@ -722,7 +725,6 @@ if st.session_state.parts:
                     ax2.axis('off')
                     ax2.set_title(f"[{room_name}] Assembled: {asm['w']}x{asm['h']}mm | {asm['type']} | {joint_count} Joints", fontsize=9)
                     
-                    # Footer Page Number
                     fig2.text(0.95, 0.05, f"Page {pdf.get_pagecount() + 1}", ha='right', fontsize=9)
                     
                     st.pyplot(fig2)
