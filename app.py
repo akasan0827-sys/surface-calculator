@@ -47,11 +47,17 @@ def generate_fragments(w, h, strategy_ratios):
             res.append({"w": short_side, "h": f['l'], "x": 0, "y": f['offset']})
     return res
 
-def piece_fits_slab(f, limit_w, limit_h):
+def piece_fits_slab(f, limit_w, limit_h, strict_grain=False):
+    """If strict_grain is True, no rotation is allowed to preserve veins."""
+    if strict_grain:
+        return f['w'] <= limit_w and f['h'] <= limit_h
     return (f['w'] <= limit_w and f['h'] <= limit_h) or (f['h'] <= limit_w and f['w'] <= limit_h)
 
-def get_oriented_limits(w, h, limit_a, limit_b):
-    """Matches the longest side of the piece to the longest limit to minimize cuts."""
+def get_oriented_limits(w, h, limit_a, limit_b, strict_grain=False):
+    """Matches the longest side of the piece to the longest limit, UNLESS strict grain is locked."""
+    if strict_grain:
+        return limit_a, limit_b
+        
     max_limit, min_limit = max(limit_a, limit_b), min(limit_a, limit_b)
     if w >= h:
         return max_limit, min_limit
@@ -76,16 +82,35 @@ def get_mandatory_fragments(w, h, limit_w, limit_h):
         rem_w -= cut_w
     return frags
 
-def can_pack(rects_to_pack, num_slabs, sheet_w, sheet_h, kerf):
-    p = newPacker(rotation=True)
+def can_pack(rects_to_pack, num_slabs, sheet_w, sheet_h, kerf, strict_grain=False):
+    # If strict grain is True, tell rectpack NOT to rotate pieces
+    p = newPacker(rotation=not strict_grain)
     p.add_bin(sheet_w, sheet_h, count=num_slabs)
     for r in rects_to_pack:
         p.add_rect(r['w'] + kerf, r['h'] + kerf, rid=r['rid'])
     p.pack()
     return p, len(p.rect_list()) == len(rects_to_pack)
 
-# --- SMART LABELING WITH STRICT CLIPPING AND TAG SYSTEM ---
-def draw_smart_label(ax, room_name, piece_type, w_label, h_label, rx, ry, act_w, act_h, rect_patch, tag=""):
+
+# --- MULTI-COLOR SMART LABELING (RED ROOM NUMBERS) ---
+def draw_multiline_text(ax, cx, cy, lines, colors, fs, rot, rect_patch, act_w, act_h):
+    """Draws multiple lines of text with distinct colors (e.g. Red for Rooms) safely inside the piece."""
+    line_height_ratio = 0.25 
+    num_lines = len(lines)
+    
+    for i, (text, color) in enumerate(zip(lines, colors)):
+        if rot == 0:
+            offset_y = (act_h * line_height_ratio) * ( (num_lines - 1) / 2.0 - i )
+            offset_x = 0
+        else:
+            offset_x = (act_w * line_height_ratio) * ( (num_lines - 1) / 2.0 - i )
+            offset_y = 0
+
+        t = ax.text(cx + offset_x, cy + offset_y, text, color=color, weight='bold', ha='center', va='center', fontsize=fs, rotation=rot, clip_on=True)
+        t.set_clip_path(rect_patch)
+
+
+def draw_smart_label(ax, room_name, part_type, w_label, h_label, rx, ry, act_w, act_h, rect_patch, tag=""):
     cx = rx + act_w / 2
     cy = ry + act_h / 2
     
@@ -94,23 +119,26 @@ def draw_smart_label(ax, room_name, piece_type, w_label, h_label, rx, ry, act_w,
         
     room_str = str(room_name).strip()
     is_wide = act_w >= act_h
-
     tag_text = f"#{tag}" if tag else ""
 
     # 1. HIDE EXTREMELY TINY SPLINTERS
     if act_w <= 12 or act_h <= 12:
         return
 
-    # 2. OVERRIDE FOR TINY PIECES (e.g. 50x50, 60x60) -> Show ONLY the ID Tag
+    # 2. OVERRIDE FOR TINY PIECES (Show ONLY the ID Tag)
     if act_w <= 80 and act_h <= 80:
         if tag_text:
             t = ax.text(cx, cy, tag_text, color='black', weight='bold', ha='center', va='center', fontsize=5, clip_on=True)
             t.set_clip_path(rect_patch)
         return
 
+    lines, colors = [], []
+    fs, rot = 4, 0
+
     # 3. LARGE PIECES
     if act_w >= 220 and act_h >= 120:
-        text = f"[{room_str}]\n{piece_type}\n{w_label}x{h_label}" if piece_type else f"[{room_str}]\n{w_label}x{h_label}"
+        lines = [f"[{room_str}]", f"{part_type}", f"{w_label}x{h_label}"]
+        colors = ['#cc0000', 'black', 'black'] # RED Room, Black Details
         rot = 0
         fs = 6
 
@@ -118,17 +146,21 @@ def draw_smart_label(ax, room_name, piece_type, w_label, h_label, rx, ry, act_w,
     elif is_wide:
         display_room = room_str[:5] + ".." if len(room_str) > 5 else room_str
         if act_h >= 50:
-            text = f"[{display_room}] {w_label}x{h_label}"
+            lines = [f"[{display_room}] {part_type}", f"{w_label}x{h_label}"]
+            colors = ['#cc0000', 'black']
             fs = 4.5
         elif act_h >= 25:
             if act_w >= 100:
-                text = f"{w_label}x{h_label}"
+                lines = [f"{w_label}x{h_label}"]
+                colors = ['black']
                 fs = 4
             else:
-                text = tag_text
+                lines = [tag_text]
+                colors = ['black']
                 fs = 4
         else:
-            text = tag_text
+            lines = [tag_text]
+            colors = ['black']
             fs = 3.5
         rot = 0
 
@@ -136,23 +168,26 @@ def draw_smart_label(ax, room_name, piece_type, w_label, h_label, rx, ry, act_w,
     else:
         display_room = room_str[:5] + ".." if len(room_str) > 5 else room_str
         if act_w >= 50:
-            text = f"[{display_room}] {w_label}x{h_label}"
+            lines = [f"[{display_room}] {part_type}", f"{w_label}x{h_label}"]
+            colors = ['#cc0000', 'black']
             fs = 4.5
         elif act_w >= 25:
             if act_h >= 100:
-                text = f"{w_label}x{h_label}"
+                lines = [f"{w_label}x{h_label}"]
+                colors = ['black']
                 fs = 4
             else:
-                text = tag_text
+                lines = [tag_text]
+                colors = ['black']
                 fs = 4
         else:
-            text = tag_text
+            lines = [tag_text]
+            colors = ['black']
             fs = 3.5
         rot = 90
         
-    if text:
-        t = ax.text(cx, cy, text, color='black', weight='bold', ha='center', va='center', fontsize=fs, rotation=rot, clip_on=True)
-        t.set_clip_path(rect_patch)
+    if lines:
+        draw_multiline_text(ax, cx, cy, lines, colors, fs, rot, rect_patch, act_w, act_h)
 
 
 # --- SIDEBAR SETTINGS ---
@@ -163,6 +198,13 @@ kerf = st.sidebar.number_input("Blade Kerf (mm)", value=3)
 
 st.sidebar.markdown("---")
 st.sidebar.header("2. Optimization Rules")
+
+strict_grain = st.sidebar.checkbox(
+    "Veined Material (Strict Grain Match)", 
+    value=False, 
+    help="Prevents ANY rotation of pieces. Essential for marble/veined colors so grain strictly follows the length."
+)
+st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 enable_site_limit = st.sidebar.checkbox(
     "Enable Elevator/Site Limit", 
@@ -180,7 +222,7 @@ st.sidebar.markdown("<br>", unsafe_allow_html=True)
 is_seamless = st.sidebar.checkbox(
     "Enable Optional Scrap Recycling", 
     value=True, 
-    help="Check to recycle gray waste into standard parts. Uncheck for veined colors where you want zero optional joints."
+    help="Recycles dead waste into usable standard parts."
 )
 
 st.sidebar.markdown("---")
@@ -191,36 +233,41 @@ st.sidebar.markdown("🟧 **Orange:** Factory Joint (Oversized for Slab)")
 st.sidebar.markdown("🟩 **Green:** Optional Recycled Scrap")
 st.sidebar.markdown("⬜ **Gray:** Dead Waste")
 
-# --- UI: LIST MANAGEMENT & UPLOADS ---
+
+# --- UI: PROJECT SETUP & TABS ---
 if 'parts' not in st.session_state: 
     st.session_state.parts = []
 
-col_manual, col_upload = st.columns([1, 1])
+st.subheader("📁 Project Setup")
+project_name = st.text_input("Master Project Name", value="Amari Hotel Project", help="This name will appear on all PDF production pages.")
 
-with col_manual:
-    st.subheader("🛠️ Manual Input")
-    st.markdown("Type dimensions and click **Add** (or press Enter).")
-    c_room, c1, c2, c3, c4 = st.columns([2, 2, 2, 2, 2])
+tab_manual, tab_excel = st.tabs(["🛠️ Manual Input (Organized)", "📥 Excel Import"])
+
+with tab_manual:
+    st.markdown("Select part category to keep lists organized without long typing.")
+    c_room, c_type, c1, c2, c3, c4 = st.columns([2, 1.5, 1.5, 1.5, 1.5, 2])
     
-    room = c_room.text_input("Room/Set", value="Kitchen")
+    room = c_room.text_input("Room/Unit #", value="101")
+    part_type = c_type.selectbox("Part Category", ["Top", "Apron", "Splash", "Skirting", "Other"])
     w = c1.number_input("Width (mm)", value=1000, min_value=1)
     h = c2.number_input("Height (mm)", value=350, min_value=1)
-    q = c3.number_input("Quantity", value=6, min_value=1)
+    q = c3.number_input("Qty", value=6, min_value=1)
     
     c4.markdown("<br>", unsafe_allow_html=True) 
     if c4.button("➕ Add to List", use_container_width=True):
-        st.session_state.parts.append({"room": room, "w": int(w), "h": int(h), "q": int(q)})
+        st.session_state.parts.append({"room": room, "type": part_type, "w": int(w), "h": int(h), "q": int(q)})
         st.rerun()
 
-with col_upload:
-    st.subheader("📥 Excel Import")
+with tab_excel:
+    st.markdown("Ensure your Excel file has columns representing **Width, Height, Qty, Room, and Type**.")
     uploaded_file = st.file_uploader("Upload Cut List (.xlsx)", type=["xlsx", "xls"])
     if uploaded_file is not None:
         try:
             df = pd.read_excel(uploaded_file)
             df.columns = [str(c).strip().lower() for c in df.columns]
             
-            room_col = next((c for c in df.columns if any(k in c for k in ['room', 'set', 'area', 'location', 'tag'])), None)
+            room_col = next((c for c in df.columns if any(k in c for k in ['room', 'set', 'area', 'location'])), None)
+            type_col = next((c for c in df.columns if any(k in c for k in ['type', 'part', 'category', 'desc'])), None)
             w_col = next((c for c in df.columns if any(k in c for k in ['width', 'wid', 'w', 'length', 'len'])), None)
             h_col = next((c for c in df.columns if any(k in c for k in ['height', 'hei', 'h', 'depth', 'dep'])), None)
             q_col = next((c for c in df.columns if any(k in c for k in ['qty', 'quantity', 'q', 'pcs', 'count', 'amount'])), None)
@@ -229,6 +276,7 @@ with col_upload:
                 if st.button("Load Excel Data", type="primary"):
                     for index, row in df.iterrows():
                         room_val = str(row[room_col]) if room_col and pd.notna(row[room_col]) else "Unassigned"
+                        type_val = str(row[type_col]) if type_col and pd.notna(row[type_col]) else "Part"
                         
                         w_val = pd.to_numeric(row[w_col], errors='coerce')
                         h_val = pd.to_numeric(row[h_col], errors='coerce')
@@ -241,6 +289,7 @@ with col_upload:
                         if w_val > 0 and h_val > 0 and q_val > 0:
                             st.session_state.parts.append({
                                 "room": room_val,
+                                "type": type_val,
                                 "w": w_val, 
                                 "h": h_val, 
                                 "q": q_val
@@ -265,7 +314,8 @@ if st.session_state.parts:
         total_order_sqm += row_total_sqm
         
         col_text, col_btn = st.columns([6, 1])
-        col_text.write(f"• **[{p.get('room', 'Unassigned')}]** — **{p['q']} pcs** of {p['w']}x{p['h']}mm &nbsp;&nbsp;*( {sqm_per_pc:.2f} SQM/pc | Total: {row_total_sqm:.2f} SQM )*")
+        # Displaying the structured data
+        col_text.write(f"• **[{p.get('room', 'Unassigned')}] {p.get('type', 'Part')}** — **{p['q']} pcs** of {p['w']}x{p['h']}mm &nbsp;&nbsp;*( {sqm_per_pc:.2f} SQM/pc | Total: {row_total_sqm:.2f} SQM )*")
         if col_btn.button("🗑️ Remove", key=f"del_{i}"):
             st.session_state.parts.pop(i)
             st.rerun()
@@ -288,28 +338,29 @@ if st.session_state.parts:
         target_id = 0
         
         id_to_room = {} 
+        id_to_type = {}
         
         for p in st.session_state.parts:
             for _ in range(p['q']):
                 id_to_room[target_id] = p.get('room', 'Unassigned')
+                id_to_type[target_id] = p.get('type', 'Part')
                 
                 needs_site_split = False
                 if enable_site_limit:
-                    if not piece_fits_slab({'w': p['w'], 'h': p['h']}, site_limit_l, site_limit_w):
+                    if not piece_fits_slab({'w': p['w'], 'h': p['h']}, site_limit_l, site_limit_w, strict_grain):
                         needs_site_split = True
                 
                 # Step 1: Manage Elevator/Site Limit Splits
                 if needs_site_split:
-                    cw, ch = get_oriented_limits(p['w'], p['h'], site_limit_l, site_limit_w)
+                    cw, ch = get_oriented_limits(p['w'], p['h'], site_limit_l, site_limit_w, strict_grain)
                     site_frags = get_mandatory_fragments(p['w'], p['h'], cw, ch)
                     
                     final_frags = []
                     all_fit = True
                     for sf in site_frags:
-                        if not piece_fits_slab({'w': sf['w'], 'h': sf['h']}, eff_w, eff_h):
+                        if not piece_fits_slab({'w': sf['w'], 'h': sf['h']}, eff_w, eff_h, strict_grain):
                             all_fit = False
-                            # It fits in the elevator, but not on the raw slab! Cut it again.
-                            scw, sch = get_oriented_limits(sf['w'], sf['h'], eff_w, eff_h)
+                            scw, sch = get_oriented_limits(sf['w'], sf['h'], eff_w, eff_h, strict_grain)
                             sub_frags = get_mandatory_fragments(sf['w'], sf['h'], scw, sch)
                             for sub_f in sub_frags:
                                 final_frags.append({
@@ -328,8 +379,8 @@ if st.session_state.parts:
                     
                 # Step 2: Normal Factory Slab Limits (No site limits triggered)
                 else:
-                    if not piece_fits_slab({'w': p['w'], 'h': p['h']}, eff_w, eff_h):
-                        cw, ch = get_oriented_limits(p['w'], p['h'], eff_w, eff_h)
+                    if not piece_fits_slab({'w': p['w'], 'h': p['h']}, eff_w, eff_h, strict_grain):
+                        cw, ch = get_oriented_limits(p['w'], p['h'], eff_w, eff_h, strict_grain)
                         best_frags = get_mandatory_fragments(p['w'], p['h'], cw, ch)
                         mandatory_oversized.append({
                             'id': target_id, 'w': p['w'], 'h': p['h'], 'frags': best_frags, 'type': 'Factory Joint'
@@ -360,7 +411,7 @@ if st.session_state.parts:
                     for f_idx, f in enumerate(mt['frags']):
                         base_rects_input.append({'w': f['w'], 'h': f['h'], 'rid': f"{prefix}_{mt['id']}_{mt['w']}_{mt['h']}_{f_idx}"})
                         
-                packer_base, is_base_success = can_pack(base_rects_input, test_slabs, sheet_w, sheet_h, kerf)
+                packer_base, is_base_success = can_pack(base_rects_input, test_slabs, sheet_w, sheet_h, kerf, strict_grain)
                 base_rects = packer_base.rect_list()
                 
                 packed_solid_ids = set([int(str(r[5]).split('_')[1]) for r in base_rects if str(r[5]).startswith('solid')])
@@ -390,7 +441,7 @@ if st.session_state.parts:
                         
                         for strategy in SPLIT_STRATEGIES:
                             frags = generate_fragments(target['w'], target['h'], strategy)
-                            if any(not piece_fits_slab(f, eff_w, eff_h) for f in frags):
+                            if any(not piece_fits_slab(f, eff_w, eff_h, strict_grain) for f in frags):
                                 continue
                                 
                             test_layout = []
@@ -408,7 +459,7 @@ if st.session_state.parts:
                             for f_idx, f in enumerate(frags):
                                 test_layout.append({'w': f['w'], 'h': f['h'], 'rid': f"rec_{target['id']}_{target['w']}_{target['h']}_{f_idx}"})
                                 
-                            test_packer, is_test_success = can_pack(test_layout, test_slabs, sheet_w, sheet_h, kerf)
+                            test_packer, is_test_success = can_pack(test_layout, test_slabs, sheet_w, sheet_h, kerf, strict_grain)
                             
                             if is_test_success:
                                 for f_idx, f in enumerate(frags):
@@ -472,7 +523,7 @@ if st.session_state.parts:
         output_excel = io.BytesIO()
         with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
             pd.DataFrame(st.session_state.parts).to_excel(writer, index=False, sheet_name='CutList')
-        st.download_button("📥 Export Cut List to Excel", data=output_excel.getvalue(), file_name="S&C_Asia_Cut_List.xlsx", mime="application/vnd.ms-excel")
+        st.download_button("📥 Export Cut List to Excel", data=output_excel.getvalue(), file_name=f"{project_name}_Cut_List.xlsx", mime="application/vnd.ms-excel")
 
         # Visuals & PDF Generation
         pdf_buffer = io.BytesIO()
@@ -485,6 +536,9 @@ if st.session_state.parts:
             site_joints_count = len([m for m in mandatory_oversized if 'Site' in m['type']])
             fact_joints_count = len([m for m in mandatory_oversized if m['type'] == 'Factory Joint'])
             
+            # Print Project header on first page
+            fig_sum.suptitle(f"PROJECT: {project_name.upper()}", fontsize=14, weight='bold', color='#cc0000', y=0.95)
+            
             summary_header = "S&C ASIA | PRODUCTION & MATERIAL EFFICIENCY REPORT"
             summary_content = (
                 f"====================================================\n"
@@ -493,7 +547,8 @@ if st.session_state.parts:
                 f" • Total Slabs Pulled        : {final_slabs} Slabs\n"
                 f" • Total Target Area         : {total_project_sqm:.2f} SQM\n"
                 f" • True Material Yield       : {yield_percentage:.1f}%\n"
-                f" • Estimated Glue Required   : {total_glue_length_cm:.1f} CM\n\n"
+                f" • Estimated Glue Required   : {total_glue_length_cm:.1f} CM\n"
+                f" • Vein Matching Required    : {'YES (No Rotation)' if strict_grain else 'NO'}\n\n"
                 f"----------------------------------------------------\n"
                 f" BATCH COMPOSITION BREAKDOWN\n"
                 f"----------------------------------------------------\n"
@@ -505,6 +560,9 @@ if st.session_state.parts:
             ax_sum.text(0.05, 0.85, summary_header, fontsize=12, weight='bold', color='#1f4e78', va='top')
             ax_sum.text(0.05, 0.70, summary_content, fontsize=10, family='monospace', va='top')
             
+            # Footer Page Number
+            fig_sum.text(0.95, 0.05, f"Page {pdf.get_pagecount() + 1}", ha='right', fontsize=9)
+            
             pdf.savefig(fig_sum, bbox_inches='tight')
             plt.close(fig_sum)
 
@@ -512,6 +570,8 @@ if st.session_state.parts:
             st.subheader("Factory Floor: Cutting Map")
             for bin_idx in range(final_slabs):
                 fig, (ax, ax_leg) = plt.subplots(2, 1, figsize=(10, 4.5), gridspec_kw={'height_ratios': [3.5, 1]})
+                fig.suptitle(f"PROJECT: {project_name.upper()} | SLAB {bin_idx + 1}", fontsize=12, weight='bold', color='#1f4e78')
+                
                 ax.add_patch(patches.Rectangle((0,0), sheet_w, sheet_h, facecolor='#e0e0e0', edgecolor='black', lw=2))
                 
                 bin_rects = [r for r in final_rects if r[0] == bin_idx]
@@ -525,19 +585,20 @@ if st.session_state.parts:
                     parts = rid.split('_')
                     t_id = int(parts[1])
                     room_name = id_to_room.get(t_id, "Unassigned")
+                    part_type_str = id_to_type.get(t_id, "Part")
                     act_w, act_h = r[3] - kerf, r[4] - kerf
                     
                     if rid.startswith('solid'):
-                        p_type = "SOLID"
+                        p_type = part_type_str
                         target_w, target_h = parts[2], parts[3]
                     elif rid.startswith('site'):
-                        p_type = "SITE JOINT"
+                        p_type = f"{part_type_str} (SITE JOINT)"
                         target_w, target_h = str(int(act_w)), str(int(act_h))
                     elif rid.startswith('mand'):
-                        p_type = "FACTORY JOINT"
+                        p_type = f"{part_type_str} (FACT JOINT)"
                         target_w, target_h = str(int(act_w)), str(int(act_h))
                     elif rid.startswith('rec'):
-                        p_type = "FRAG"
+                        p_type = f"{part_type_str} (FRAG)"
                         target_w, target_h = str(int(act_w)), str(int(act_h))
                         
                     key = (room_name, p_type, target_w, target_h)
@@ -554,19 +615,20 @@ if st.session_state.parts:
                     parts = rid.split('_')
                     t_id = int(parts[1])
                     room_name = id_to_room.get(t_id, "Unassigned")
+                    part_type_str = id_to_type.get(t_id, "Part")
                     
                     if rid.startswith('solid'):
                         target_w, target_h = parts[2], parts[3]
-                        key = (room_name, "SOLID", target_w, target_h)
+                        key = (room_name, part_type_str, target_w, target_h)
                         tag = unique_parts[key]['tag']
                         
                         patch = patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#2c3e50', facecolor='#85c1e9', lw=1.5)
                         ax.add_patch(patch)
-                        draw_smart_label(ax, room_name, "SOLID", target_w, target_h, rx, ry, act_w, act_h, patch, tag)
+                        draw_smart_label(ax, room_name, part_type_str, target_w, target_h, rx, ry, act_w, act_h, patch, tag)
                         
                     elif rid.startswith('site'):
                         target_w, target_h = str(int(act_w)), str(int(act_h))
-                        key = (room_name, "SITE JOINT", target_w, target_h)
+                        key = (room_name, f"{part_type_str} (SITE JOINT)", target_w, target_h)
                         tag = unique_parts[key]['tag']
                         
                         patch = patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#5b2c6f', facecolor='#d7bde2', lw=1.5, linestyle='--')
@@ -575,16 +637,16 @@ if st.session_state.parts:
 
                     elif rid.startswith('mand'):
                         target_w, target_h = str(int(act_w)), str(int(act_h))
-                        key = (room_name, "FACTORY JOINT", target_w, target_h)
+                        key = (room_name, f"{part_type_str} (FACT JOINT)", target_w, target_h)
                         tag = unique_parts[key]['tag']
                         
                         patch = patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#d35400', facecolor='#f5b041', lw=1.5, linestyle='--')
                         ax.add_patch(patch)
-                        draw_smart_label(ax, room_name, "FACTORY", target_w, target_h, rx, ry, act_w, act_h, patch, tag)
+                        draw_smart_label(ax, room_name, "FACT", target_w, target_h, rx, ry, act_w, act_h, patch, tag)
                         
                     elif rid.startswith('rec'):
                         target_w, target_h = str(int(act_w)), str(int(act_h))
-                        key = (room_name, "FRAG", target_w, target_h)
+                        key = (room_name, f"{part_type_str} (FRAG)", target_w, target_h)
                         tag = unique_parts[key]['tag']
                         
                         patch = patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#1e8449', facecolor='#82e0aa', lw=1.5, linestyle='--')
@@ -595,7 +657,6 @@ if st.session_state.parts:
                 ax.set_ylim(0, sheet_h)
                 ax.set_aspect('equal')
                 ax.axis('off')
-                ax.set_title(f"Slab {bin_idx + 1}", fontsize=11, weight='bold')
                 
                 # --- FORMAT AND RENDER THE LEGEND SECTION BELOW THE SLAB ---
                 ax_leg.axis('off')
@@ -606,9 +667,8 @@ if st.session_state.parts:
                     tag = unique_parts[k]['tag']
                     count = unique_parts[k]['count']
                     room, ptype, tw, th = k
-                    legend_lines.append(f"#{tag} - [{room}] {tw}x{th}mm ({ptype}) : {count} pcs")
+                    legend_lines.append(f"#{tag} - [Room {room}] {tw}x{th}mm ({ptype}) : {count} pcs")
                     
-                # Distribute text into 3 clean columns
                 col_size = math.ceil(len(legend_lines) / 3) if len(legend_lines) > 0 else 1
                 cols = [legend_lines[i:i+col_size] for i in range(0, len(legend_lines), col_size)]
                 
@@ -618,7 +678,9 @@ if st.session_state.parts:
                     col_text = "\n".join(col_items)
                     ax_leg.text(c_idx * 0.33, 0.75, col_text, fontsize=7, family='monospace', va='top', ha='left')
 
-                plt.tight_layout()
+                # Footer Page Number
+                fig.text(0.95, 0.05, f"Page {pdf.get_pagecount() + 1}", ha='right', fontsize=9)
+                plt.tight_layout(rect=[0, 0.05, 1, 0.95]) # Adjust layout to not hide title
                 st.pyplot(fig)
                 pdf.savefig(fig, bbox_inches='tight')
                 plt.close(fig)
@@ -628,12 +690,16 @@ if st.session_state.parts:
                 st.markdown("---")
                 st.subheader("🧩 Glue Jointing Assembly Maps")
                 
-                for asm in assembled_pieces_data:
+                for idx, asm in enumerate(assembled_pieces_data):
                     fig2, ax2 = plt.subplots(figsize=(6, 2.5))
-                    ax2.add_patch(patches.Rectangle((0,0), asm['w'], asm['h'], facecolor='#f9f9f9', edgecolor='black', lw=2))
                     
                     room_name = id_to_room.get(asm['id'], "Unassigned")
+                    part_type_str = id_to_type.get(asm['id'], "Part")
                     joint_count = len(asm['frags']) - 1
+                    
+                    fig2.suptitle(f"PROJECT: {project_name.upper()} | ASSEMBLY MAP", fontsize=10, weight='bold', color='#1f4e78', y=1.05)
+                    
+                    ax2.add_patch(patches.Rectangle((0,0), asm['w'], asm['h'], facecolor='#f9f9f9', edgecolor='black', lw=2))
                     
                     if 'Site' in asm['type']:
                         edge_c = '#5b2c6f'
@@ -648,16 +714,20 @@ if st.session_state.parts:
                     for f in asm['frags']:
                         patch = patches.Rectangle((f['x'], f['y']), f['w'], f['h'], edgecolor=edge_c, linestyle='--', facecolor=face_c, alpha=0.6, lw=1.5)
                         ax2.add_patch(patch)
-                        draw_smart_label(ax2, room_name, "", int(f['w']), int(f['h']), f['x'], f['y'], f['w'], f['h'], patch, tag="")
+                        draw_smart_label(ax2, room_name, part_type_str, int(f['w']), int(f['h']), f['x'], f['y'], f['w'], f['h'], patch, tag="")
                     
                     ax2.set_xlim(0, asm['w'])
                     ax2.set_ylim(0, asm['h'])
                     ax2.set_aspect('equal')
                     ax2.axis('off')
-                    ax2.set_title(f"[{room_name}] Assembled: {asm['w']}x{asm['h']}mm | {asm['type']} | {joint_count} Joints", fontsize=10)
+                    ax2.set_title(f"[{room_name}] Assembled: {asm['w']}x{asm['h']}mm | {asm['type']} | {joint_count} Joints", fontsize=9)
+                    
+                    # Footer Page Number
+                    fig2.text(0.95, 0.05, f"Page {pdf.get_pagecount() + 1}", ha='right', fontsize=9)
+                    
                     st.pyplot(fig2)
                     pdf.savefig(fig2, bbox_inches='tight')
                     plt.close(fig2)
 
         st.markdown("---")
-        st.download_button("📄 Export Production PDF", pdf_buffer.getvalue(), "S&C_Asia_Production_Map.pdf", "application/pdf")
+        st.download_button("📄 Export Production PDF", pdf_buffer.getvalue(), f"{project_name.replace(' ', '_')}_Production_Map.pdf", "application/pdf")
