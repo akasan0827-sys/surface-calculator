@@ -130,6 +130,11 @@ def draw_smart_label(ax, room_name, part_type, w_label, h_label, rx, ry, act_w, 
     fs, rot = 4, 0
 
     if act_w >= 220 and act_h >= 120:
+        # Draw prominent ID badge in the top-left corner
+        if tag_text:
+            t_badge = ax.text(rx + 15, ry + act_h - 15, tag_text, color='#cc0000', weight='bold', ha='left', va='top', fontsize=8, clip_on=True)
+            t_badge.set_clip_path(rect_patch)
+            
         lines = [f"[{room_str}]", f"{part_type}", f"{w_label}x{h_label}"]
         colors = ['#cc0000', 'black', 'black']
         rot = 0
@@ -137,12 +142,12 @@ def draw_smart_label(ax, room_name, part_type, w_label, h_label, rx, ry, act_w, 
     elif is_wide:
         display_room = room_str[:5] + ".." if len(room_str) > 5 else room_str
         if act_h >= 50:
-            lines = [f"[{display_room}] {part_type}", f"{w_label}x{h_label}"]
+            lines = [f"{tag_text} [{display_room}] {part_type}", f"{w_label}x{h_label}"]
             colors = ['#cc0000', 'black']
             fs = 4.5
         elif act_h >= 25:
             if act_w >= 100:
-                lines = [f"{w_label}x{h_label}"]
+                lines = [f"{tag_text} {w_label}x{h_label}"]
                 colors = ['black']
                 fs = 4
             else:
@@ -157,12 +162,12 @@ def draw_smart_label(ax, room_name, part_type, w_label, h_label, rx, ry, act_w, 
     else:
         display_room = room_str[:5] + ".." if len(room_str) > 5 else room_str
         if act_w >= 50:
-            lines = [f"[{display_room}] {part_type}", f"{w_label}x{h_label}"]
+            lines = [f"{tag_text} [{display_room}] {part_type}", f"{w_label}x{h_label}"]
             colors = ['#cc0000', 'black']
             fs = 4.5
         elif act_w >= 25:
             if act_h >= 100:
-                lines = [f"{w_label}x{h_label}"]
+                lines = [f"{tag_text} {w_label}x{h_label}"]
                 colors = ['black']
                 fs = 4
             else:
@@ -254,7 +259,6 @@ with tab_manual:
     c4.markdown("<br>", unsafe_allow_html=True) 
     if c4.button("➕ Batch Add to List", use_container_width=True):
         for i in range(int(num_units)):
-            # Determine room string based on auto-numbering toggle
             if enable_auto_num:
                 current_room_num = int(start_num) + i
                 room_str = f"{room_prefix}{current_room_num}" if room_prefix else str(current_room_num)
@@ -671,7 +675,7 @@ if st.session_state.parts:
                     tag = unique_parts[k]['tag']
                     count = unique_parts[k]['count']
                     room, ptype, tw, th = k
-                    legend_lines.append(f"#{tag} - [{room}] {tw}x{th}mm ({ptype}) : {count} pcs")
+                    legend_lines.append(f"#{tag} - [Room {room}] {tw}x{th}mm ({ptype}) : {count} pcs")
                     
                 col_size = math.ceil(len(legend_lines) / 3) if len(legend_lines) > 0 else 1
                 cols = [legend_lines[i:i+col_size] for i in range(0, len(legend_lines), col_size)]
