@@ -555,11 +555,11 @@ if st.session_state.parts:
         with PdfPages(pdf_buffer) as pdf:
             
             # --- PAGE 1: REPORT SUMMARY ---
-            fig_sum, ax_sum = plt.subplots(figsize=(8, 6))
+            fig_sum, ax_sum = plt.subplots(figsize=(11.69, 8.27))
             ax_sum.axis('off')
             site_joints_count = len([m for m in mandatory_oversized if 'Site' in m['type']])
             fact_joints_count = len([m for m in mandatory_oversized if m['type'] == 'Factory Joint'])
-            fig_sum.suptitle(f"PROJECT: {project_name.upper()}", fontsize=14, weight='bold', color='#cc0000', y=0.95)
+            fig_sum.suptitle(f"PROJECT: {project_name.upper()}", fontsize=16, weight='bold', color='#cc0000', y=0.95)
             
             summary_header = "S&C ASIA | PRODUCTION & MATERIAL EFFICIENCY REPORT"
             summary_content = (
@@ -579,46 +579,65 @@ if st.session_state.parts:
                 f" • Site Jointed Pieces       : {site_joints_count}\n"
                 f" • Pieces on Recycled Boards : {final_recycled_count}\n"
             )
-            ax_sum.text(0.05, 0.85, summary_header, fontsize=12, weight='bold', color='#1f4e78', va='top')
-            ax_sum.text(0.05, 0.70, summary_content, fontsize=10, family='monospace', va='top')
+            ax_sum.text(0.05, 0.85, summary_header, fontsize=14, weight='bold', color='#1f4e78', va='top')
+            ax_sum.text(0.05, 0.70, summary_content, fontsize=12, family='monospace', va='top')
             fig_sum.text(0.95, 0.05, f"Page {pdf.get_pagecount() + 1}", ha='right', fontsize=9)
             pdf.savefig(fig_sum, bbox_inches='tight')
             plt.close(fig_sum)
 
-            # --- PAGE 2+: ORIGINAL INPUT CUT LIST (PAGINATED) ---
-            list_items = []
+            # --- PAGE 2+: GROUPED PACKING CHECKLIST (WITH SUBTOTALS) ---
+            room_groups = {}
             for p in st.session_state.parts:
-                sqm_pc = (p['w'] * p['h']) / 1_000_000
-                total_row = sqm_pc * p['q']
-                list_items.append(f"[{p.get('room', 'Unassigned')}] {p.get('type', 'Part')} - {p['q']} pcs of {p['w']}x{p['h']}mm ({sqm_pc:.2f} SQM/pc | Total: {total_row:.2f} SQM)")
+                r = str(p.get('room', 'Unassigned'))
+                if r not in room_groups:
+                    room_groups[r] = {'parts': [], 'totals': {}}
+                room_groups[r]['parts'].append(p)
+                t = str(p.get('type', 'Part'))
+                room_groups[r]['totals'][t] = room_groups[r]['totals'].get(t, 0) + p['q']
+
+            def new_list_page():
+                f, a = plt.subplots(figsize=(11.69, 8.27))
+                a.axis('off')
+                f.suptitle(f"PROJECT: {project_name.upper()} | PACKING CHECKLIST", fontsize=14, weight='bold', color='#cc0000', y=0.95)
+                return f, a, 0.88
+
+            fig_list, ax_list, y_pos = new_list_page()
             
-            items_per_page = 35 # Prevents running off the bottom of the PDF
-            for i in range(0, len(list_items), items_per_page):
-                page_items = list_items[i:i+items_per_page]
-                fig_list, ax_list = plt.subplots(figsize=(8, 6))
-                ax_list.axis('off')
-                fig_list.suptitle(f"PROJECT: {project_name.upper()} | INPUT CUT LIST", fontsize=14, weight='bold', color='#cc0000', y=0.95)
+            for room, data in room_groups.items():
+                if y_pos < 0.20:
+                    fig_list.text(0.95, 0.05, f"Page {pdf.get_pagecount() + 1}", ha='right', fontsize=9)
+                    pdf.savefig(fig_list, bbox_inches='tight')
+                    plt.close(fig_list)
+                    fig_list, ax_list, y_pos = new_list_page()
+                    
+                ax_list.text(0.05, y_pos, f"▶ ROOM / UNIT: {room}", fontsize=12, weight='bold', color='#cc0000')
+                y_pos -= 0.03
                 
-                y_pos = 0.90
-                ax_list.text(0.05, y_pos, "ORIGINAL ORDER REQUIREMENTS:", fontsize=11, weight='bold', color='#1f4e78')
-                y_pos -= 0.05
+                subtotals_str = " | ".join([f"{k}: {v} pcs" for k, v in data['totals'].items()])
+                ax_list.text(0.07, y_pos, f"Subtotals: {subtotals_str}", fontsize=10, weight='bold', color='#1f4e78')
+                y_pos -= 0.035
                 
-                for item in page_items:
-                    ax_list.text(0.05, y_pos, f"• {item}", fontsize=9, family='monospace')
-                    y_pos -= 0.022
-                
-                if i + items_per_page >= len(list_items):
-                    y_pos -= 0.02
-                    ax_list.text(0.05, y_pos, f"TOTAL PROJECT AREA: {total_project_sqm:.2f} SQM", fontsize=10, weight='bold', color='#1f4e78')
-                
-                fig_list.text(0.95, 0.05, f"Page {pdf.get_pagecount() + 1}", ha='right', fontsize=9)
-                pdf.savefig(fig_list, bbox_inches='tight')
-                plt.close(fig_list)
+                for p in data['parts']:
+                    if y_pos < 0.10:
+                        fig_list.text(0.95, 0.05, f"Page {pdf.get_pagecount() + 1}", ha='right', fontsize=9)
+                        pdf.savefig(fig_list, bbox_inches='tight')
+                        plt.close(fig_list)
+                        fig_list, ax_list, y_pos = new_list_page()
+                        
+                    sqm_pc = (p['w'] * p['h']) / 1_000_000
+                    total_row = sqm_pc * p['q']
+                    ax_list.text(0.07, y_pos, f"• {p.get('type', 'Part')} - {p['q']} pcs of {p['w']}x{p['h']}mm ({sqm_pc:.2f} SQM/pc | Total: {total_row:.2f} SQM)", fontsize=9, family='monospace')
+                    y_pos -= 0.025
+                y_pos -= 0.03 
+
+            fig_list.text(0.95, 0.05, f"Page {pdf.get_pagecount() + 1}", ha='right', fontsize=9)
+            pdf.savefig(fig_list, bbox_inches='tight')
+            plt.close(fig_list)
 
             # --- PRIMARY SLAB CUTTING MAPS ---
             st.subheader("Factory Floor: Primary Slab Maps")
             for bin_idx in range(final_slabs):
-                fig, (ax, ax_leg) = plt.subplots(2, 1, figsize=(10, 4.5), gridspec_kw={'height_ratios': [3.5, 1]})
+                fig, (ax, ax_leg) = plt.subplots(2, 1, figsize=(11.69, 8.27), gridspec_kw={'height_ratios': [1.8, 1]})
                 fig.suptitle(f"PROJECT: {project_name.upper()} | PRIMARY SLAB {bin_idx + 1}", fontsize=12, weight='bold', color='#1f4e78')
                 ax.add_patch(patches.Rectangle((0,0), sheet_w, sheet_h, facecolor='#e0e0e0', edgecolor='black', lw=2))
                 bin_rects = [r for r in final_rects if r[0] == bin_idx]
@@ -700,9 +719,9 @@ if st.session_state.parts:
                 col_size = math.ceil(len(legend_lines) / 3) if len(legend_lines) > 0 else 1
                 cols = [legend_lines[i:i+col_size] for i in range(0, len(legend_lines), col_size)]
                 
-                ax_leg.text(0, 1.0, f"Remarks / Parts in Slab {bin_idx + 1}:", fontsize=9, weight='bold', va='top', ha='left')
+                ax_leg.text(0, 1.0, f"Remarks / Parts in Slab {bin_idx + 1}:", fontsize=10, weight='bold', va='top', ha='left')
                 for c_idx, col_items in enumerate(cols):
-                    ax_leg.text(c_idx * 0.33, 0.75, "\n".join(col_items), fontsize=7, family='monospace', va='top', ha='left')
+                    ax_leg.text(c_idx * 0.33, 0.85, "\n\n".join(col_items), fontsize=8.5, family='monospace', va='top', ha='left')
 
                 fig.text(0.95, 0.05, f"Page {pdf.get_pagecount() + 1}", ha='right', fontsize=9)
                 plt.tight_layout(rect=[0, 0.05, 1, 0.95]) 
@@ -715,7 +734,7 @@ if st.session_state.parts:
                 st.markdown("---")
                 st.subheader("♻️ Double Step Nesting: Recycled Boards")
                 for vb in final_virtual_boards:
-                    fig3, (ax3, ax_leg3) = plt.subplots(2, 1, figsize=(10, 4.5), gridspec_kw={'height_ratios': [3.5, 1]})
+                    fig3, (ax3, ax_leg3) = plt.subplots(2, 1, figsize=(11.69, 8.27), gridspec_kw={'height_ratios': [1.8, 1]})
                     fig3.suptitle(f"PROJECT: {project_name.upper()} | RECYCLED BOARD {vb['bin_idx'] + 1} (GLUE DONOR BLOCKS HERE)", fontsize=12, weight='bold', color='#1e8449')
                     ax3.add_patch(patches.Rectangle((0,0), vb['w'], vb['h'], facecolor='#f9f9f9', edgecolor='black', lw=2))
 
@@ -763,9 +782,9 @@ if st.session_state.parts:
                     col_size = math.ceil(len(legend_lines) / 3) if len(legend_lines) > 0 else 1
                     cols = [legend_lines[i:i+col_size] for i in range(0, len(legend_lines), col_size)]
                     
-                    ax_leg3.text(0, 1.0, f"Remarks / Parts to cut from Recycled Board {vb['bin_idx'] + 1}:", fontsize=9, weight='bold', va='top', ha='left')
+                    ax_leg3.text(0, 1.0, f"Remarks / Parts to cut from Recycled Board {vb['bin_idx'] + 1}:", fontsize=10, weight='bold', va='top', ha='left')
                     for c_idx, col_items in enumerate(cols):
-                        ax_leg3.text(c_idx * 0.33, 0.75, "\n".join(col_items), fontsize=7, family='monospace', va='top', ha='left')
+                        ax_leg3.text(c_idx * 0.33, 0.85, "\n\n".join(col_items), fontsize=8.5, family='monospace', va='top', ha='left')
 
                     fig3.text(0.95, 0.05, f"Page {pdf.get_pagecount() + 1}", ha='right', fontsize=9)
                     plt.tight_layout(rect=[0, 0.05, 1, 0.95])
@@ -778,7 +797,7 @@ if st.session_state.parts:
                 st.markdown("---")
                 st.subheader("🧩 Oversized Jointing Assembly Maps")
                 for asm in assembled_pieces_data:
-                    fig2, ax2 = plt.subplots(figsize=(6, 2.5))
+                    fig2, ax2 = plt.subplots(figsize=(11.69, 8.27))
                     room_name, part_type_str = id_to_room.get(asm['id'], "Unassigned"), id_to_type.get(asm['id'], "Part")
                     joint_count = len(asm['frags']) - 1
                     fig2.suptitle(f"PROJECT: {project_name.upper()} | OVERSIZED ASSEMBLY MAP", fontsize=10, weight='bold', color='#1f4e78', y=1.05)
