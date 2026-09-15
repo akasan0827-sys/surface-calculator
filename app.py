@@ -54,6 +54,7 @@ def split_virtual_board(vw, vh, strategy, max_w, max_h, kerf):
     frags = generate_fragments(vw, vh, strategy)
     donor_blocks = []
     for f in frags:
+        # EXACT dimensions mapped (no extra buffer)
         dw = min(f['w'], max_w - kerf)
         dh = min(f['h'], max_h - kerf)
         donor_blocks.append({'w': dw, 'h': dh, 'x': f['x'], 'y': f['y'], 'orig_w': f['w'], 'orig_h': f['h']})
@@ -443,8 +444,14 @@ if st.session_state.parts:
                     
                     for strategy in strategies_to_test:
                         test_layout = []
-                        
-                        # FIX: Add Donor Blocks FIRST so they anchor cleanly on the left (x=0)
+                        for tid in packed_solid_ids:
+                            t = next(x for x in standard_targets if x['id'] == tid)
+                            test_layout.append({'w': t['w'], 'h': t['h'], 'rid': f"solid_{t['id']}_{t['w']}_{t['h']}"})
+                        for mt in mandatory_oversized:
+                            prefix = 'site' if 'Site' in mt['type'] else 'mand'
+                            for f_idx, f in enumerate(mt['frags']):
+                                test_layout.append({'w': f['w'], 'h': f['h'], 'rid': f"{prefix}_{mt['id']}_{mt['w']}_{mt['h']}_{f_idx}"})
+                                
                         current_donor_blocks = []
                         for vb in virtual_boards:
                             dbs = split_virtual_board(vb['w'], vb['h'], strategy, sheet_w, sheet_h, kerf)
@@ -452,17 +459,6 @@ if st.session_state.parts:
                                 rid = f"donor_{vb['bin_idx']}_{db_idx}"
                                 test_layout.append({'w': db['w'], 'h': db['h'], 'rid': rid})
                                 current_donor_blocks.append({'rid': rid, 'db': db, 'vb_idx': vb['bin_idx']})
-
-                        # Add Solid Targets
-                        for tid in packed_solid_ids:
-                            t = next(x for x in standard_targets if x['id'] == tid)
-                            test_layout.append({'w': t['w'], 'h': t['h'], 'rid': f"solid_{t['id']}_{t['w']}_{t['h']}"})
-                            
-                        # Add Mandatory Oversized pieces
-                        for mt in mandatory_oversized:
-                            prefix = 'site' if 'Site' in mt['type'] else 'mand'
-                            for f_idx, f in enumerate(mt['frags']):
-                                test_layout.append({'w': f['w'], 'h': f['h'], 'rid': f"{prefix}_{mt['id']}_{mt['w']}_{mt['h']}_{f_idx}"})
                                 
                         test_packer, is_test_success = can_pack(test_layout, test_slabs, sheet_w, sheet_h, kerf, strict_grain)
                         
