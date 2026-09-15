@@ -54,9 +54,9 @@ def split_virtual_board(vw, vh, strategy, max_w, max_h, kerf):
     frags = generate_fragments(vw, vh, strategy)
     donor_blocks = []
     for f in frags:
-        # Add 15mm oversized margin for rough cutting and jointing
-        dw = min(f['w'] + 15, max_w - kerf)
-        dh = min(f['h'] + 15, max_h - kerf)
+        # EXACT dimensions mapped (no extra buffer)
+        dw = min(f['w'], max_w - kerf)
+        dh = min(f['h'], max_h - kerf)
         donor_blocks.append({'w': dw, 'h': dh, 'x': f['x'], 'y': f['y'], 'orig_w': f['w'], 'orig_h': f['h']})
     return donor_blocks
 
@@ -101,7 +101,7 @@ def can_pack(rects_to_pack, num_slabs, sheet_w, sheet_h, kerf, strict_grain=Fals
     p.pack()
     return p, len(p.rect_list()) == len(rects_to_pack)
 
-# --- MULTI-COLOR SMART LABELING (RED ROOM NUMBERS) ---
+# --- MULTI-COLOR SMART LABELING ---
 def draw_multiline_text(ax, cx, cy, lines, colors, fs, rot, rect_patch, act_w, act_h):
     line_height_ratio = 0.25 
     num_lines = len(lines)
@@ -141,7 +141,6 @@ def draw_smart_label(ax, room_name, part_type, w_label, h_label, rx, ry, act_w, 
     fs, rot = 4, 0
 
     if act_w >= 220 and act_h >= 120:
-        # EXACT POSITIONING FOR #1 TAG (Center-Left)
         if tag_text:
             t_badge = ax.text(rx + 15, cy, tag_text, color='#cc0000', weight='bold', ha='left', va='center', fontsize=10, clip_on=True)
             t_badge.set_clip_path(rect_patch)
@@ -234,7 +233,7 @@ st.sidebar.markdown("### Visual Key")
 st.sidebar.markdown("🟦 **Blue:** Clean Solid Cut")
 st.sidebar.markdown("🟪 **Purple:** Site Joint (Elevator)")
 st.sidebar.markdown("🟧 **Orange:** Factory Joint (Oversized)")
-st.sidebar.markdown("🟩 **Green:** Donor Block (Double Step Recycle)")
+st.sidebar.markdown("🟩 **Green Dotted:** Donor Block (Double Step Recycle)")
 st.sidebar.markdown("⬜ **Gray:** Dead Waste")
 
 
@@ -427,7 +426,6 @@ if st.session_state.parts:
                     missing_standard = [t for t in standard_targets if t['id'] not in packed_solid_ids]
                     missing_standard = sorted(missing_standard, key=lambda x: x['w'] * x['h'], reverse=True)
                     
-                    # 1. Nest missing pieces into Virtual Recycled Boards
                     virt_packer = newPacker(rotation=not strict_grain)
                     virt_packer.add_bin(sheet_w, sheet_h, count=len(missing_standard))
                     for t in missing_standard:
@@ -444,7 +442,6 @@ if st.session_state.parts:
                     strategies_to_test = [[1.0]] + SPLIT_STRATEGIES
                     all_recycled_packed = False
                     
-                    # 2. Slice Virtual Boards into Donor Blocks and test packing on Primary Slabs
                     for strategy in strategies_to_test:
                         test_layout = []
                         for tid in packed_solid_ids:
@@ -514,11 +511,46 @@ if st.session_state.parts:
         
         st.success(f"📋 **Mixed Batch Output:** {final_solid_count} pieces clean-cut. {len(mandatory_oversized)} oversized joints generated. {final_recycled_count} pieces pulled from Double Step Recycled Boards.")
 
+        # --- COMPREHENSIVE EXCEL EXPORT ---
+        export_data = []
+        for bin_idx in range(final_slabs):
+            bin_rects = [r for r in final_rects if r[0] == bin_idx]
+            for r in bin_rects:
+                rid = str(r[5])
+                act_w, act_h = r[3] - kerf, r[4] - kerf
+                if rid.startswith('donor'):
+                    parts = rid.split('_')
+                    board_num = int(parts[1]) + 1
+                    export_data.append({'Slab No.': bin_idx + 1, 'Room/Area': 'FACTORY USE', 'Part Details': f'DONOR BLOCK (For Board {board_num})', 'Width (mm)': int(act_w), 'Height (mm)': int(act_h)})
+                else:
+                    parts = rid.split('_')
+                    t_id = int(parts[1])
+                    room_name = id_to_room.get(t_id, "Unassigned")
+                    part_type_str = id_to_type.get(t_id, "Part")
+                    
+                    cat = "Solid Cut"
+                    if rid.startswith('site'): cat = "Site Joint"
+                    elif rid.startswith('mand'): cat = "Factory Joint"
+                    elif rid.startswith('rec'): cat = "Recycled Board Output"
+                    
+                    export_data.append({'Slab No.': bin_idx + 1, 'Room/Area': room_name, 'Part Details': f"{part_type_str} ({cat})", 'Width (mm)': int(act_w), 'Height (mm)': int(act_h)})
+        
+        df_export = pd.DataFrame(export_data)
         output_excel = io.BytesIO()
         with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
-            pd.DataFrame(st.session_state.parts).to_excel(writer, index=False, sheet_name='CutList')
-        st.download_button("📥 Export Cut List to Excel", data=output_excel.getvalue(), file_name=f"{project_name}_Cut_List.xlsx", mime="application/vnd.ms-excel")
+            pd.DataFrame(st.session_state.parts).to_excel(writer, index=False, sheet_name='Input Order')
+            if not df_export.empty:
+                df_export.to_excel(writer, index=False, sheet_name='Factory Cut Plan')
+        
+        st.download_button(
+            label="📥 Export Detailed Cut Plan (Excel)", 
+            data=output_excel.getvalue(), 
+            file_name=f"{project_name.replace(' ', '_')}_Factory_Cut_Plan.xlsx", 
+            mime="application/vnd.ms-excel",
+            type="primary"
+        )
 
+        # --- PDF GENERATION ---
         pdf_buffer = io.BytesIO()
         with PdfPages(pdf_buffer) as pdf:
             
@@ -552,6 +584,36 @@ if st.session_state.parts:
             fig_sum.text(0.95, 0.05, f"Page {pdf.get_pagecount() + 1}", ha='right', fontsize=9)
             pdf.savefig(fig_sum, bbox_inches='tight')
             plt.close(fig_sum)
+
+            # --- PAGE 2+: ORIGINAL INPUT CUT LIST (PAGINATED) ---
+            list_items = []
+            for p in st.session_state.parts:
+                sqm_pc = (p['w'] * p['h']) / 1_000_000
+                total_row = sqm_pc * p['q']
+                list_items.append(f"[{p.get('room', 'Unassigned')}] {p.get('type', 'Part')} - {p['q']} pcs of {p['w']}x{p['h']}mm ({sqm_pc:.2f} SQM/pc | Total: {total_row:.2f} SQM)")
+            
+            items_per_page = 35 # Prevents running off the bottom of the PDF
+            for i in range(0, len(list_items), items_per_page):
+                page_items = list_items[i:i+items_per_page]
+                fig_list, ax_list = plt.subplots(figsize=(8, 6))
+                ax_list.axis('off')
+                fig_list.suptitle(f"PROJECT: {project_name.upper()} | INPUT CUT LIST", fontsize=14, weight='bold', color='#cc0000', y=0.95)
+                
+                y_pos = 0.90
+                ax_list.text(0.05, y_pos, "ORIGINAL ORDER REQUIREMENTS:", fontsize=11, weight='bold', color='#1f4e78')
+                y_pos -= 0.05
+                
+                for item in page_items:
+                    ax_list.text(0.05, y_pos, f"• {item}", fontsize=9, family='monospace')
+                    y_pos -= 0.022
+                
+                if i + items_per_page >= len(list_items):
+                    y_pos -= 0.02
+                    ax_list.text(0.05, y_pos, f"TOTAL PROJECT AREA: {total_project_sqm:.2f} SQM", fontsize=10, weight='bold', color='#1f4e78')
+                
+                fig_list.text(0.95, 0.05, f"Page {pdf.get_pagecount() + 1}", ha='right', fontsize=9)
+                pdf.savefig(fig_list, bbox_inches='tight')
+                plt.close(fig_list)
 
             # --- PRIMARY SLAB CUTTING MAPS ---
             st.subheader("Factory Floor: Primary Slab Maps")
@@ -597,7 +659,7 @@ if st.session_state.parts:
                         target_w, target_h = str(int(act_w)), str(int(act_h))
                         key = ("FACTORY", f"BOARD {int(parts[1])+1} DONOR", target_w, target_h)
                         tag = unique_parts[key]['tag']
-                        patch = patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#1e8449', facecolor='#a9dfbf', lw=1.5, linestyle='--')
+                        patch = patches.Rectangle((rx, ry), act_w, act_h, edgecolor='#1e8449', facecolor='#a9dfbf', lw=2.5, linestyle=':')
                         ax.add_patch(patch)
                         draw_smart_label(ax, "FACTORY", f"DONOR BOARD {int(parts[1])+1}", target_w, target_h, rx, ry, act_w, act_h, patch, tag)
                     else:
@@ -659,7 +721,7 @@ if st.session_state.parts:
 
                     vb_dbs = [db['db'] for db in final_donor_blocks if db['vb_idx'] == vb['bin_idx']]
                     for db in vb_dbs:
-                        patch = patches.Rectangle((db['x'], db['y']), db['orig_w'], db['orig_h'], edgecolor='#1e8449', linestyle='--', facecolor='#d5f5e3', alpha=0.5, lw=2)
+                        patch = patches.Rectangle((db['x'], db['y']), db['orig_w'], db['orig_h'], edgecolor='#1e8449', linestyle=':', facecolor='#d5f5e3', alpha=0.5, lw=3)
                         ax3.add_patch(patch)
                         ax3.text(db['x'] + db['orig_w']/2, db['y'] + db['orig_h']/2, f"RAW DONOR BLOCK\n{int(db['orig_w'])}x{int(db['orig_h'])}", color='#1e8449', weight='bold', ha='center', va='center', fontsize=9)
 
